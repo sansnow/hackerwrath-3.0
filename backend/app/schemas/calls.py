@@ -43,7 +43,11 @@ class CallSegmentUpdateResponse(BaseModel):
     sequence_number: int
     duplicate_evidence_suppressed: int = 0
     synced_keywords_triggered: List[str] = Field(default_factory=list)
+    # Risk of the whole call so far: evidence accumulates and never decays.
     assessment: ScamRiskAssessment
+    # Risk of what was just said (this segment plus an unfinished sentence before it). Use this for
+    # live captions and alerts, so "Hello" after a scam line isn't shown as a scam.
+    moment_assessment: Optional[ScamRiskAssessment] = None
 
 
 class CallHistoryResponse(BaseModel):

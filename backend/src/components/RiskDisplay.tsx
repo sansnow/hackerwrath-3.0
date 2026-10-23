@@ -1,311 +1,281 @@
 import { useState } from 'react';
-import {
-  Shield,
-  AlertTriangle,
-  CheckCircle,
-  XCircle,
-  Info,
-  Database,
-  Search,
-  BookOpen,
-  ChevronDown,
-  ChevronUp,
-  Sparkles,
-} from 'lucide-react';
-import type { RiskAssessment, RetrievedExample } from '../hooks/useLiveDetection';
+import { ChevronDown } from 'lucide-react';
+import type { RiskAssessment } from '../hooks/useLiveDetection';
+import { ALERT_COPY, askKindOf, categoriesOf, chipsOf, isHigh, isPossible } from '../spell/signals';
+import { AskIcon } from './ScamAlert';
 
 interface RiskDisplayProps {
   assessment: RiskAssessment | null;
   isListening: boolean;
+  /** Bring the full-screen alert back after it was put away. */
+  onOpenAlert?: () => void;
 }
 
-export default function RiskDisplay({ assessment, isListening }: RiskDisplayProps) {
-  const [showAllRagExamples, setShowAllRagExamples] = useState(false);
-
+/**
+ * "This call": what the guardian makes of it, in the app's own words. The detector's score and
+ * reasoning stay folded away under "Detector details" (the alert never shows them).
+ */
+export default function RiskDisplay({ assessment, isListening, onOpenAlert }: RiskDisplayProps) {
   if (!assessment) {
     return (
-      <div className="glass-card p-6 md:p-8 text-center animate-fade-in border border-[#292F3C]">
-        <div className="flex flex-col items-center gap-4 py-6">
-          <div className="relative">
-            <div className="w-16 h-16 rounded-2xl bg-[#171B26] border border-[#292F3C] flex items-center justify-center shadow-lg">
-              <Shield className="w-8 h-8 text-[#8B7CFF]" />
-            </div>
-            <div className="absolute -inset-2 rounded-2xl bg-[#8B7CFF] opacity-15 blur-md" />
-          </div>
-          <div>
-            <h3 className="text-lg font-bold text-[#F1F3F8]">
-              {isListening ? 'Active Call Interceptor Online' : 'Ready for Audio or Text Input'}
-            </h3>
-            <p className="text-xs text-[#A2A9BA] max-w-sm mt-1.5 leading-relaxed mx-auto">
-              {isListening
-                ? 'Continuously monitoring dual-channel speech streams against 2,841 indexed scam cases and real-time rule signatures.'
-                : 'Speak into the microphone, simulate an incoming call, or paste text to perform live RAG and rule analysis.'}
-            </p>
-          </div>
-        </div>
+      <div className="sb-card p-6 sb-rise">
+        <div className="sb-eyebrow mb-2">This call</div>
+        <p className="text-[19px] leading-[25px] font-bold text-head">
+          {isListening ? 'Listening. Nobody has asked for anything yet.' : 'Nothing checked yet.'}
+        </p>
+        <p className="text-[14px] text-faint mt-1.5">
+          {isListening
+            ? 'If a caller asks for a code, a PIN, a QR scan or an app, you will know within seconds.'
+            : 'Turn scam check on, run a demo call, or paste what a caller said.'}
+        </p>
       </div>
     );
   }
 
-  const {
-    risk_level = 'LOW',
-    risk_score = 0,
-    caption = 'Monitoring conversation',
-    reasons = [],
-    recommended_action = 'Continue with normal caution',
-    confidence = 0.9,
-    rule_analysis = { rule_score: 0, triggered_indicators: [], suppressed_protective_matches: [] },
-    contextual_analysis = {} as any,
-    rag_classification = null,
-  } = assessment;
-
-  const safeReasons = Array.isArray(reasons) ? reasons : [];
-  const safeTriggered = Array.isArray(rule_analysis?.triggered_indicators)
-    ? rule_analysis.triggered_indicators
-    : [];
-  const safeSuppressed = Array.isArray(rule_analysis?.suppressed_protective_matches)
-    ? rule_analysis.suppressed_protective_matches
-    : [];
-  const retrievedExamples: RetrievedExample[] = rag_classification?.retrieved_examples || [];
-
-  const levelConfig = {
-    LOW: {
-      icon: <CheckCircle className="w-7 h-7 text-[#63D6A5]" />,
-      color: '#63D6A5',
-      badgeBg: 'bg-[#63D6A5]/15 text-[#63D6A5] border-[#63D6A5]/30',
-      label: 'SAFE',
-    },
-    MEDIUM: {
-      icon: <AlertTriangle className="w-7 h-7 text-[#F2C879]" />,
-      color: '#F2C879',
-      badgeBg: 'bg-[#F2C879]/15 text-[#F2C879] border-[#F2C879]/30',
-      label: 'CAUTION',
-    },
-    HIGH: {
-      icon: <XCircle className="w-7 h-7 text-[#F08091]" />,
-      color: '#F08091',
-      badgeBg: 'bg-[#F08091]/15 text-[#F08091] border-[#F08091]/30',
-      label: 'DANGER',
-    },
-    CRITICAL: {
-      icon: <XCircle className="w-7 h-7 text-[#F08091] animate-pulse" />,
-      color: '#F08091',
-      badgeBg: 'bg-[#F08091]/20 text-[#F08091] border-[#F08091]/50',
-      label: 'CRITICAL FRAUD',
-    },
-    UNKNOWN: {
-      icon: <Info className="w-7 h-7 text-[#A2A9BA]" />,
-      color: '#A2A9BA',
-      badgeBg: 'bg-[#A2A9BA]/15 text-[#A2A9BA] border-[#A2A9BA]/30',
-      label: 'EVALUATING',
-    },
-  };
-
-  const config = levelConfig[risk_level] || levelConfig.UNKNOWN;
-  const scorePercent = Math.round(risk_score > 1 ? risk_score : risk_score * 100);
+  const level = assessment.risk_level || 'LOW';
+  const high = isHigh(level);
+  const possible = isPossible(level);
+  const kind = askKindOf(categoriesOf(assessment));
+  const chips = chipsOf(assessment);
+  const copy = ALERT_COPY[kind];
 
   return (
-    <div className="space-y-4 animate-slide-up">
-      {/* Primary Assessment Card */}
-      <div className="glass-card p-6 border border-[#292F3C] space-y-5">
-        {/* Top Header Row */}
-        <div className="flex items-center justify-between gap-4 pb-4 border-b border-[#292F3C]">
-          <div className="flex items-center gap-3">
-            <div className="p-2 rounded-xl bg-[#11141C] border border-[#292F3C] shrink-0">
-              {config.icon}
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <span className={`text-[10px] font-bold font-mono px-2 py-0.5 rounded-full border ${config.badgeBg}`}>
-                  {config.label}
-                </span>
-                <span className="text-xs text-[#70798C] font-mono">
-                  Confidence: {Math.round((confidence || 0.9) * 100)}%
-                </span>
-              </div>
-              <h3 className="text-base font-bold text-[#F1F3F8] mt-1 leading-snug">
-                {caption}
-              </h3>
-            </div>
-          </div>
-
-          {/* Radial Score Gauge */}
-          <div className="relative w-16 h-16 shrink-0">
-            <svg className="w-16 h-16 -rotate-90" viewBox="0 0 80 80">
-              <circle cx="40" cy="40" r="34" fill="none" stroke="rgba(41, 47, 60, 0.6)" strokeWidth="6" />
-              <circle
-                cx="40"
-                cy="40"
-                r="34"
-                fill="none"
-                stroke={config.color}
-                strokeWidth="6"
-                strokeLinecap="round"
-                strokeDasharray={`${2 * Math.PI * 34}`}
-                strokeDashoffset={`${2 * Math.PI * 34 * (1 - scorePercent / 100)}`}
-                style={{ transition: 'stroke-dashoffset 0.8s ease-out' }}
-              />
-            </svg>
-            <div className="absolute inset-0 flex flex-col items-center justify-center">
-              <span className="text-sm font-bold font-mono" style={{ color: config.color }}>
-                {scorePercent}
-              </span>
-              <span className="text-[9px] text-[#70798C]">/100</span>
-            </div>
-          </div>
-        </div>
-
-        {/* Recommended Immediate Action */}
-        <div className="p-3.5 rounded-xl bg-[#11141C] border border-[#292F3C] flex items-start gap-2.5">
-          <Shield className="w-4 h-4 text-[#8B7CFF] shrink-0 mt-0.5" />
-          <div>
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-[#8B7CFF] block mb-0.5">
-              Defensive Recommendation
+    <div className="flex flex-col gap-4 sb-rise">
+      {high || possible ? (
+        <div
+          className={`rounded-[22px] p-5 sm:p-6 flex flex-col gap-3.5 border ${high ? 'bg-danger-soft border-danger/20' : 'bg-warn-soft border-warn/40'}`}
+        >
+          <div className="flex items-center gap-2">
+            <span
+              className={`px-3 py-1.5 rounded-full text-[12px] leading-4 font-bold tracking-[0.16em] ${high ? 'bg-danger text-on-danger' : 'bg-warn text-on-warn'}`}
+            >
+              {high ? 'HIGH RISK' : 'POSSIBLE RISK'}
             </span>
-            <p className="text-xs text-[#F1F3F8] font-medium leading-relaxed">
-              {recommended_action}
-            </p>
+            <span className="text-[12px] font-semibold text-faint">this call</span>
           </div>
-        </div>
-
-        {/* Rationale Excerpts */}
-        {safeReasons.length > 0 && (
-          <div className="space-y-1.5 pt-1">
-            <h4 className="text-[11px] font-semibold uppercase tracking-wider text-[#A2A9BA]">
-              Behavioral Evaluation
-            </h4>
-            <div className="space-y-1">
-              {safeReasons.slice(0, 3).map((reason, i) => (
-                <div key={i} className="flex items-start gap-2 text-xs text-[#A2A9BA]">
-                  <span className="w-1.5 h-1.5 rounded-full mt-1.5 shrink-0" style={{ backgroundColor: config.color }} />
-                  <span>{reason}</span>
-                </div>
-              ))}
+          <div className="flex items-center gap-3.5">
+            <h3
+              className={`sb-flexword flex-1 min-w-0 text-[40px] leading-[40px] font-extrabold ${high ? 'text-danger-text' : 'text-warn-ink'}`}
+              style={{ fontFamily: "'Anek Latin', 'Anek Devanagari', system-ui, sans-serif" }}
+            >
+              {copy.headline}
+            </h3>
+            <div
+              className={`w-16 h-16 shrink-0 rounded-[20px] flex items-center justify-center bg-card/70 ${high ? 'text-danger-ink' : 'text-warn-ink'}`}
+            >
+              <AskIcon kind={kind} size={40} />
             </div>
           </div>
-        )}
-      </div>
-
-      {/* RAG GROUNDED SEMANTIC RETRIEVAL CARD */}
-      {(retrievedExamples.length > 0 || rag_classification) && (
-        <div className="glass-card p-5 border border-[#292F3C] space-y-3.5">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Database className="w-4 h-4 text-[#72D7E8]" />
-              <h4 className="text-xs font-bold text-[#F1F3F8] uppercase tracking-wider">
-                Grounded Vector Citations (RAG)
-              </h4>
-            </div>
-            <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-[#72D7E8]/15 text-[#72D7E8] border border-[#72D7E8]/30">
-              2,841 Indexed Corpus
-            </span>
-          </div>
-
-          {rag_classification?.explanation && (
-            <p className="text-xs text-[#A2A9BA] bg-[#11141C] p-2.5 rounded-xl border border-[#292F3C] leading-relaxed">
-              <span className="font-semibold text-[#F1F3F8]">RAG Classification: </span>
-              {rag_classification.explanation}
-            </p>
-          )}
-
-          {/* Retrieved Semantic Reference Examples */}
-          {retrievedExamples.length > 0 && (
-            <div className="space-y-2 pt-1">
-              <span className="text-[10px] text-[#70798C] uppercase tracking-wider block">
-                Top Semantic Neighbor Dialogues:
-              </span>
-              {(showAllRagExamples ? retrievedExamples : retrievedExamples.slice(0, 2)).map((ex, idx) => (
-                <div
-                  key={idx}
-                  className="p-3 rounded-xl bg-[#11141C] border border-[#292F3C] space-y-1.5 text-xs"
-                >
-                  <div className="flex items-center justify-between">
-                    <span
-                      className={`text-[9px] font-bold font-mono px-2 py-0.5 rounded-full border ${
-                        ex.label === 'SCAM'
-                          ? 'bg-[#F08091]/15 text-[#F08091] border-[#F08091]/30'
-                          : 'bg-[#63D6A5]/15 text-[#63D6A5] border-[#63D6A5]/30'
-                      }`}
-                    >
-                      {ex.label}
-                    </span>
-                    <span className="text-[10px] text-[#72D7E8] font-mono">
-                      Cosine Sim: {(ex.similarity * 100).toFixed(1)}%
-                    </span>
-                  </div>
-                  <p className="text-[#A2A9BA] text-[11px] leading-relaxed line-clamp-3 italic">
-                    "{ex.text}"
-                  </p>
-                </div>
-              ))}
-
-              {retrievedExamples.length > 2 && (
-                <button
-                  onClick={() => setShowAllRagExamples(!showAllRagExamples)}
-                  className="w-full py-1 text-[11px] text-[#8B7CFF] hover:underline flex items-center justify-center gap-1"
-                >
-                  {showAllRagExamples ? (
-                    <>
-                      <span>Show Less</span>
-                      <ChevronUp className="w-3 h-3" />
-                    </>
-                  ) : (
-                    <>
-                      <span>View All {retrievedExamples.length} Citations</span>
-                      <ChevronDown className="w-3 h-3" />
-                    </>
-                  )}
-                </button>
-              )}
+          <p className="text-[17px] leading-[23px] font-bold text-ink">{copy.line}</p>
+          {chips.length > 0 && (
+            <div className="flex flex-col gap-2">
+              <span className="sb-eyebrow">What they said</span>
+              <ul className="flex flex-wrap gap-2 list-none">
+                {chips.map((chip) => (
+                  <li key={chip} className={`sb-chip bg-card ${high ? 'text-danger-ink' : 'text-warn-ink'}`}>
+                    {chip}
+                  </li>
+                ))}
+              </ul>
             </div>
           )}
+          {high && onOpenAlert && (
+            <button type="button" onClick={onOpenAlert} className="sb-btn sb-btn-end self-start mt-1 rounded-[18px]">
+              Show the alert
+            </button>
+          )}
+        </div>
+      ) : (
+        <div className="sb-card p-6">
+          <div className="flex items-center justify-between mb-2">
+            <span className="sb-eyebrow">This call</span>
+            <span className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-faint">
+              <span className="w-2 h-2 rounded-full bg-accent" />
+              {level === 'UNKNOWN' ? 'not enough to go on' : 'no ask yet'}
+            </span>
+          </div>
+          <p className="text-[19px] leading-[25px] font-bold text-head">
+            {level === 'UNKNOWN'
+              ? 'Too little was said to tell. Keep listening.'
+              : 'Nobody has asked for a code, a PIN, a scan or an app.'}
+          </p>
+          {assessment.caption && <p className="text-[14px] text-faint mt-1.5">“{assessment.caption}”</p>}
         </div>
       )}
 
-      {/* Triggered Rule Indicators */}
-      {safeTriggered.length > 0 && (
-        <div className="glass-card p-5 border border-[#292F3C] space-y-3">
-          <div className="flex items-center justify-between">
-            <h4 className="text-xs font-bold text-[#F08091] uppercase tracking-wider flex items-center gap-1.5">
-              <AlertTriangle className="w-3.5 h-3.5" />
-              <span>Triggered Rule Indicators ({safeTriggered.length})</span>
-            </h4>
-          </div>
-          <div className="grid gap-2">
-            {safeTriggered.map((ind, i) => (
-              <div key={i} className="p-2.5 rounded-xl bg-[#11141C] border border-[#292F3C] text-xs">
-                <div className="flex items-center justify-between mb-1">
-                  <span className="font-mono text-[10px] px-2 py-0.5 rounded-full bg-[#F08091]/15 text-[#F08091] border border-[#F08091]/30">
-                    {ind.category}
-                  </span>
-                  <span className="text-[10px] text-[#70798C] font-mono">
-                    Weight: {Math.round(ind.weight > 1.0 ? ind.weight : ind.weight * 100)}%
-                  </span>
-                </div>
-                <p className="text-[#A2A9BA] text-[11px] mt-1">{ind.explanation}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+      <SoundsLike assessment={assessment} />
+      <DetectorDetails assessment={assessment} />
+    </div>
+  );
+}
 
-      {/* Suppressed Protective Matches */}
-      {safeSuppressed.length > 0 && (
-        <div className="glass-card p-4 border border-[#292F3C]">
-          <h4 className="text-xs font-bold text-[#63D6A5] uppercase tracking-wider mb-2 flex items-center gap-1.5">
-            <CheckCircle className="w-3.5 h-3.5" />
-            <span>Protective Negation Suppressed</span>
+/** Grounding from the RAG vector store: the nearest real dialogues, scam or genuine. */
+function SoundsLike({ assessment }: { assessment: RiskAssessment }) {
+  const [showAll, setShowAll] = useState(false);
+  const rag = assessment.rag_classification;
+  const examples = rag?.retrieved_examples || [];
+  // Nothing close in the library (or no index built yet): no card rather than an empty one every time.
+  if (!rag || examples.length === 0) return null;
+  const shown = showAll ? examples : examples.slice(0, 2);
+
+  return (
+    <div className="sb-card p-5 flex flex-col gap-3">
+      <div className="flex items-end justify-between gap-3">
+        <div>
+          <span className="sb-eyebrow">Sounds like</span>
+          <h4 className="text-[17px] font-extrabold text-head mt-0.5">
+            {rag.insufficient_evidence ? 'No close match in real calls' : 'These real calls'}
           </h4>
-          <div className="space-y-1">
-            {safeSuppressed.map((match, i) => (
-              <div key={i} className="text-xs text-[#A2A9BA] flex items-center gap-2 py-0.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-[#63D6A5] shrink-0" />
-                <span>{match}</span>
-              </div>
-            ))}
-          </div>
         </div>
+        <span className="text-[12px] text-faint shrink-0">
+          {rag.classification === 'SCAM' ? 'mostly scams' : rag.classification === 'LEGITIMATE' ? 'mostly genuine' : 'mixed'}
+        </span>
+      </div>
+      {rag.explanation && <p className="text-[13px] text-muted">{rag.explanation}</p>}
+      {shown.length > 0 && (
+        <ul className="flex flex-col gap-2 list-none">
+          {shown.map((ex) => (
+            <li key={ex.example_id} className="sb-soft rounded-[16px] px-4 py-3">
+              <div className="flex items-center justify-between gap-2 mb-1">
+                <span
+                  className={`sb-chip text-[11px] px-2.5 py-0.5 ${
+                    ex.label === 'SCAM' ? 'bg-danger-soft text-danger-ink' : 'bg-accent-soft text-on-accent-soft'
+                  }`}
+                >
+                  {ex.label === 'SCAM' ? 'Scam call' : 'Genuine call'}
+                </span>
+                <span className="text-[12px] text-faint">{Math.round(ex.similarity * 100)}% alike</span>
+              </div>
+              <p className="text-[13px] text-ink italic line-clamp-3">“{ex.text}”</p>
+            </li>
+          ))}
+        </ul>
+      )}
+      {examples.length > 2 && (
+        <button type="button" onClick={() => setShowAll(!showAll)} className="sb-btn sb-btn-ghost self-start min-h-9 px-3 text-[13px]">
+          {showAll ? 'Show fewer' : `Show all ${examples.length}`}
+        </button>
       )}
     </div>
+  );
+}
+
+function DetectorDetails({ assessment }: { assessment: RiskAssessment }) {
+  const {
+    risk_score = 0,
+    reasons = [],
+    recommended_action,
+    confidence,
+    rule_analysis,
+    contextual_analysis,
+  } = assessment;
+  const score = Math.round(risk_score > 1 ? risk_score : risk_score * 100);
+  const triggered = Array.isArray(rule_analysis?.triggered_indicators) ? rule_analysis.triggered_indicators : [];
+  const suppressed = Array.isArray(rule_analysis?.suppressed_protective_matches) ? rule_analysis.suppressed_protective_matches : [];
+  const safeReasons = Array.isArray(reasons) ? reasons : [];
+
+  return (
+    <details className="sb-card group overflow-hidden">
+      <summary className="flex items-center justify-between gap-3 px-5 py-4 cursor-pointer list-none select-none">
+        <span className="flex flex-col">
+          <span className="text-[15px] font-extrabold text-head">Detector details</span>
+          <span className="text-[12px] text-faint">
+            Score {score}/100
+            {confidence != null ? ` · ${Math.round(confidence * 100)}% sure` : ''}
+            {triggered.length ? ` · ${triggered.length} ${triggered.length === 1 ? 'pattern' : 'patterns'}` : ''}
+          </span>
+        </span>
+        <ChevronDown className="w-5 h-5 text-faint transition-transform group-open:rotate-180" />
+      </summary>
+
+      <div className="px-5 pb-5 flex flex-col gap-4">
+        <div>
+          <div className="h-2 rounded-full bg-surface overflow-hidden">
+            <div
+              className="h-full rounded-full transition-all duration-700"
+              style={{
+                width: `${score}%`,
+                background: score >= 60 ? 'var(--sb-end)' : score >= 30 ? 'var(--sb-warn)' : 'var(--sb-accent)',
+              }}
+            />
+          </div>
+        </div>
+
+        {recommended_action && (
+          <p className="text-[14px] text-ink">
+            <span className="font-bold text-head">Detector says: </span>
+            {recommended_action}
+          </p>
+        )}
+
+        {safeReasons.length > 0 && (
+          <ul className="flex flex-col gap-1.5 list-none">
+            {safeReasons.slice(0, 5).map((reason, i) => (
+              <li key={i} className="flex items-start gap-2 text-[14px] text-muted">
+                <span className="mt-2 w-1.5 h-1.5 rounded-full bg-accent shrink-0" />
+                {reason}
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {triggered.length > 0 && (
+          <div className="flex flex-col gap-2">
+            <span className="sb-eyebrow">Patterns</span>
+            {triggered.map((ind, i) => (
+              <div key={i} className="sb-soft px-4 py-3 rounded-[16px]">
+                <div className="flex items-center justify-between gap-2 mb-0.5">
+                  <code className="font-mono text-[12px] text-head">{String(ind.category).toLowerCase()}</code>
+                  <span className="text-[12px] text-faint">
+                    weight {Math.round(ind.weight > 1 ? ind.weight : ind.weight * 100)}
+                  </span>
+                </div>
+                {ind.explanation && <p className="text-[13px] text-muted">{ind.explanation}</p>}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {suppressed.length > 0 && (
+          <div className="flex flex-col gap-1.5">
+            <span className="sb-eyebrow">Safety advice, not an ask</span>
+            {suppressed.map((match, i) => (
+              <p key={i} className="text-[13px] text-muted">
+                “{match}”
+              </p>
+            ))}
+          </div>
+        )}
+
+        {Boolean(contextual_analysis?.caller_identity_claim || contextual_analysis?.intent_classification) && (
+          <dl className="grid grid-cols-[140px_1fr] gap-x-3 gap-y-1.5 text-[13px]">
+            {contextual_analysis?.caller_identity_claim && (
+              <>
+                <dt className="font-bold text-head">Says they are</dt>
+                <dd className="text-muted">{contextual_analysis.caller_identity_claim}</dd>
+              </>
+            )}
+            {contextual_analysis?.claimed_organisation && (
+              <>
+                <dt className="font-bold text-head">From</dt>
+                <dd className="text-muted">{contextual_analysis.claimed_organisation}</dd>
+              </>
+            )}
+            {contextual_analysis?.intent_classification && (
+              <>
+                <dt className="font-bold text-head">Intent</dt>
+                <dd className="text-muted">{contextual_analysis.intent_classification}</dd>
+              </>
+            )}
+            {contextual_analysis?.possible_impersonation && (
+              <>
+                <dt className="font-bold text-head">Impersonation</dt>
+                <dd className="text-danger-text font-bold">Likely</dd>
+              </>
+            )}
+          </dl>
+        )}
+      </div>
+    </details>
   );
 }

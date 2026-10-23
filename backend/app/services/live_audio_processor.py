@@ -406,7 +406,10 @@ class LiveAudioSession:
             )
 
             seg_res = self.conversation_manager.process_segment(self.call_id, seg_req)
-            assessment = seg_res.assessment
+            call_assessment = seg_res.assessment
+            # Captions carry the risk of what was just said, so harmless words after a scam line
+            # aren't flagged; the whole call's risk travels alongside as callRisk*.
+            assessment = seg_res.moment_assessment or call_assessment
 
             # Extract retrieval similarity if RAG was run
             retrieval_sim = None
@@ -437,6 +440,11 @@ class LiveAudioSession:
                     "flaggedKeywords": [
                         i.keyword_or_pattern for i in assessment.rule_analysis.triggered_indicators
                     ],
+                    "flaggedCategories": [
+                        i.category for i in assessment.rule_analysis.triggered_indicators
+                    ],
+                    "callRiskScore": call_assessment.risk_score,
+                    "callRiskLevel": call_assessment.risk_level,
                     "recommendedAction": assessment.recommended_action,
                     "source": self.source,
                     "timestamp": round(time.time(), 3),

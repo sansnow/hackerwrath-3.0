@@ -105,6 +105,79 @@ REGEX_OTP_SOLICITATION = re.compile(
     re.IGNORECASE,
 )
 
+# Banking secrets and details a genuine caller never needs, in English, Hindi and Punjabi.
+# Speech-to-text often writes English banking words in Devanagari or Gurmukhi ("ओटीपी", "ਕਾਰਡ ਨੰਬਰ").
+# A bare "pin" is left out on purpose ("pin code" is a postal code).
+SENSITIVE_TERMS_EN = (
+    r"otp|one time password|cvv|cvc|upi pin|atm pin|mpin|m pin|pin number|secret pin"
+    r"|card number|card no|card details|debit card|credit card|card expiry|expiry date"
+    r"|account number|account no|account details|bank details|banking details|bank account number"
+    r"|net banking|netbanking|internet banking|banking password|login password|bank password"
+    r"|verification code|security code|aadhaar number|aadhar number|pan number"
+)
+SENSITIVE_TERMS_HI = (
+    r"ओटीपी|ओ टी पी|सीवीवी|यूपीआई पिन|एटीएम पिन|पिन नंबर|एमपिन"
+    r"|कार्ड नंबर|कार्ड नम्बर|कार्ड डिटेल|डेबिट कार्ड|क्रेडिट कार्ड|एक्सपायरी"
+    r"|अकाउंट नंबर|अकाउंट नम्बर|खाता नंबर|खाता संख्या|बैंक डिटेल|बैंक विवरण|अकाउंट डिटेल"
+    r"|नेट बैंकिंग|पासवर्ड|वेरिफिकेशन कोड|आधार नंबर"
+)
+SENSITIVE_TERMS_PA = (
+    r"ਓਟੀਪੀ|ਸੀਵੀਵੀ|ਪਿੰਨ ਨੰਬਰ|ਕਾਰਡ ਨੰਬਰ|ਡੈਬਿਟ ਕਾਰਡ|ਕ੍ਰੈਡਿਟ ਕਾਰਡ"
+    r"|ਅਕਾਊਂਟ ਨੰਬਰ|ਖਾਤਾ ਨੰਬਰ|ਬੈਂਕ ਡਿਟੇਲ|ਪਾਸਵਰਡ"
+)
+
+REGEX_SENSITIVE_MENTION = re.compile(
+    rf"\b(?:{SENSITIVE_TERMS_EN})\b|(?:{SENSITIVE_TERMS_HI})|(?:{SENSITIVE_TERMS_PA})",
+    re.IGNORECASE,
+)
+
+# An ask for one of those terms ("tell me your CVV", "card number batao", "MPIN kya hai aapka",
+# "कार्ड नंबर बताइए", "ਓਟੀਪੀ ਦੱਸੋ"), in either word order.
+_ASK_BEFORE_EN = (
+    r"read me|read out|read|tell me|tell|share|give me|give|send me|send|provide|confirm|verify"
+    r"|what is your|whats your|what s your|what is the|can you tell|i need|need your"
+    r"|batao|bata do|bata dijiye|bataiye|bolo|boliye|dijiye|de do|de dijiye|bhej do|bhejo|dasso|das do"
+)
+_ASK_AFTER_EN = (
+    r"batao|bata do|bata dijiye|bataiye|bolo|boliye|dijiye|de do|de dijiye|bhej do|bhejo|dasso|das do"
+    r"|kya hai|kitna hai|please|chahiye|share karo|send karo|bhejiye"
+)
+_ASK_HI = r"बताओ|बताइए|बताइये|बता दीजिए|बता दो|दीजिए|दे दो|भेजो|भेज दो|भेजिए|डालो|बोलिए|बोलो|शेयर करो|शेयर कीजिए|क्या है"
+_ASK_PA = r"ਦੱਸੋ|ਦੱਸ ਦਿਓ|ਦਸੋ|ਭੇਜੋ|ਪਾਓ|ਦਿਓ|ਕੀ ਹੈ"
+_TERMS_OR_CODE_EN = rf"{SENSITIVE_TERMS_EN}|code|pin|password|passcode"
+
+REGEX_SENSITIVE_SOLICITATION = re.compile(
+    rf"\b(?:{_ASK_BEFORE_EN})\b.*?\b(?:{_TERMS_OR_CODE_EN})\b"
+    rf"|\b(?:{SENSITIVE_TERMS_EN})\b.*?\b(?:{_ASK_AFTER_EN})\b"
+    rf"|(?:{SENSITIVE_TERMS_HI}|कोड|पिन).*?(?:{_ASK_HI})|(?:{_ASK_HI}).*?(?:{SENSITIVE_TERMS_HI})"
+    rf"|(?:{SENSITIVE_TERMS_PA}|ਪਿੰਨ|ਕੋਡ).*?(?:{_ASK_PA})|(?:{_ASK_PA}).*?(?:{SENSITIVE_TERMS_PA})",
+    re.IGNORECASE,
+)
+
+# Generic safety advice ("never share your CVV", "don't give your card number to anyone",
+# "bank never asks for your PIN"). Paired with POSITIVE_ASK so "don't tell anyone, just tell me the
+# OTP" is still treated as an ask.
+REGEX_PROTECTIVE_ADVICE = re.compile(
+    # The "never/don't" must govern the banking word itself: up to three words in between, none of
+    # them another verb, so "don't tell anyone, give your card number" is not read as advice.
+    rf"\b(?:never|do not|don't|don t|dont|not)\s+(?:share|give|tell|disclose|reveal|send)\s+"
+    rf"(?:(?!share\b|give\b|tell\b|send\b|read\b|batao\b)\w+\s+){{0,3}}(?:{_TERMS_OR_CODE_EN})\b"
+    rf"|\bnever\s+asks?\s+(?:you\s+)?for\b"
+    rf"|\b(?:{SENSITIVE_TERMS_EN}|code|pin|password)\b.*?\b(?:mat batana|mat bataiye|mat bataye|mat dena|share na karein|na dasso)\b"
+    rf"|(?:{SENSITIVE_TERMS_HI}|कोड|पिन).*?(?:मत बताइए|मत बताना|मत बताएं|मत दीजिए|न बताएं|साझा न करें|शेयर न करें)"
+    rf"|(?:{SENSITIVE_TERMS_PA}|ਪਿੰਨ|ਕੋਡ).*?(?:ਨਾ ਦੱਸੋ|ਨਾ ਦਸੋ|ਸਾਂਝਾ ਨਾ ਕਰੋ)",
+    re.IGNORECASE,
+)
+REGEX_ANY_SENSITIVE_SOLICITATION = re.compile(
+    rf"(?:{REGEX_OTP_SOLICITATION.pattern})|(?:{REGEX_SENSITIVE_SOLICITATION.pattern})",
+    re.IGNORECASE,
+)
+POSITIVE_ASK = re.compile(
+    r"\b(?:tell me|give me|send me|read me|share it with me|ab otp batao|mujhe batao|mujhe bata do|tell me the code)\b"
+    r"|मुझे बताओ|मुझे बताइए|मुझे बता दीजिए|ਮੈਨੂੰ ਦੱਸੋ",
+    re.IGNORECASE,
+)
+
 REGEX_ACCOUNT_SUSPENSION = re.compile(
     r"\b(account|khata|sim|sim card|card|bank account|kyc|electricity|debit card)\b.*?\b(block|blocked|suspend|suspended|freeze|frozen|deactivate|band|expired|disconnect|disconnected)\b"
     r"|\b(block|blocked|suspend|suspended|freeze|frozen|deactivate|band)\b.*?\b(account|khata|sim|card|kyc)\b"
@@ -151,7 +224,7 @@ RULE_DEFINITIONS: Tuple[RulePatternDef, ...] = (
         rule_id="RULE_OTP_PIN_SOLICITATION",
         category="OTP_OR_PIN_REQUEST",
         pattern_label="otp_or_pin_solicitation",
-        regex=REGEX_OTP_SOLICITATION,
+        regex=REGEX_ANY_SENSITIVE_SOLICITATION,
         phrases=(
             "share the otp",
             "share your otp",
@@ -408,6 +481,15 @@ RULE_DEFINITIONS: Tuple[RulePatternDef, ...] = (
         ),
         explanation="Caller asked the user to click a suspicious link or install an unverified APK.",
     ),
+    # Kept last: only counts when the same clause has no explicit ask (see RulesEngine.evaluate).
+    RulePatternDef(
+        rule_id="RULE_SENSITIVE_DETAIL_MENTION",
+        category="SENSITIVE_DETAIL_MENTION",
+        pattern_label="sensitive_banking_detail_mention",
+        regex=REGEX_SENSITIVE_MENTION,
+        phrases=(),
+        explanation="Caller brought up an OTP, CVV, PIN, card, account or net-banking detail that a genuine caller never needs.",
+    ),
 )
 
 
@@ -477,20 +559,32 @@ class RulesEngine:
                 continue
 
             # 1. Check if this clause is protective advice or a legitimate buyer payment offer
+            # Advice only counts as advice when the same clause isn't also asking ("don't tell
+            # anyone, just tell me the OTP").
+            asks_anyway = bool(POSITIVE_ASK.search(norm_clause))
             matched_protective = False
-            for prot_phrase, prot_reason in PROTECTIVE_OR_LEGITIMATE_PATTERNS:
-                if normalise_text(prot_phrase) in norm_clause:
-                    # Ensure the same clause isn't simultaneously commanding "ab otp batao"
-                    if "ab otp batao" not in norm_clause and "tell me the code" not in norm_clause:
+            if not asks_anyway:
+                for prot_phrase, prot_reason in PROTECTIVE_OR_LEGITIMATE_PATTERNS:
+                    if normalise_text(prot_phrase) in norm_clause:
                         suppressed_protective.append(f"{prot_phrase} ({prot_reason})")
                         matched_protective = True
                         break
+                if not matched_protective:
+                    advice = REGEX_PROTECTIVE_ADVICE.search(norm_clause)
+                    if advice:
+                        suppressed_protective.append(f"{advice.group(0).strip()} (Protective advice about banking secrets)")
+                        matched_protective = True
 
             if matched_protective:
                 continue
 
+            clause_categories: Set[str] = set()
+
             # 2. Evaluate structured rule definitions on this clause
             for rule_def in RULE_DEFINITIONS:
+                # A mention adds nothing when the same clause already asks for the detail.
+                if rule_def.category == "SENSITIVE_DETAIL_MENTION" and "OTP_OR_PIN_REQUEST" in clause_categories:
+                    continue
                 matched_keyword: Optional[str] = None
 
                 # A. Check regex pattern if available
@@ -508,6 +602,7 @@ class RulesEngine:
                             break
 
                 if matched_keyword:
+                    clause_categories.add(rule_def.category)
                     dedup_key = f"{rule_def.rule_id}:{rule_def.pattern_label}"
                     if dedup_key in seen:
                         duplicate_count += 1

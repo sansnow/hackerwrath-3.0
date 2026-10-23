@@ -66,6 +66,9 @@ DEFAULT_RULE_WEIGHTS: Dict[str, float] = {
     "PRESSURE_AND_SECRECY_TACTIC": 30.0,
     "SUSPICIOUS_LINK_OR_APK": 45.0,
     "CROSS_CALL_SYNCED_KEYWORD": 30.0,
+    # A caller bringing up an OTP, CVV, card or account number without (yet) asking for it:
+    # enough for a Possible risk warning, never a High risk alert on its own.
+    "SENSITIVE_DETAIL_MENTION": 38.0,
 }
 
 
@@ -129,6 +132,14 @@ class Settings:
     )
     critical_risk_threshold: float = field(
         default_factory=lambda: _env_threshold("CRITICAL_RISK_THRESHOLD", 80.0)
+    )
+    # Lowest score for a direct ask for an OTP / CVV / PIN / card or account detail (High risk),
+    # and for a bare mention of one (Possible risk).
+    credential_request_floor: float = field(
+        default_factory=lambda: _env_threshold("CREDENTIAL_REQUEST_FLOOR", 65.0)
+    )
+    sensitive_mention_floor: float = field(
+        default_factory=lambda: _env_threshold("SENSITIVE_MENTION_FLOOR", 35.0)
     )
     min_transcript_confidence: float = field(
         default_factory=lambda: _env_float("MIN_TRANSCRIPT_CONFIDENCE", 0.40)

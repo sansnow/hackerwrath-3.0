@@ -135,12 +135,17 @@ class ConversationManager:
                 duplicate_evidence_suppressed=state.total_duplicates_skipped,
                 synced_keywords_triggered=list(state.synced_keywords_hit),
                 assessment=state.latest_assessment,
+                moment_assessment=state.latest_moment_assessment,
             )
+
+        # Live speech arrives in ~1.5 s slices, so "please share the six" / "digit OTP" can be split.
+        # Read this segment together with the unfinished sentence before it.
+        window_text = self._window_text(state, segment)
 
         # Evaluate new segment against rules engine, passing `state.seen_rule_keys`
         # so repeated evidence across segments is skipped rather than double-counted.
         segment_rule_res, updated_seen_keys = self.rules_engine.evaluate(
-            segment.text,
+            window_text,
             start_seconds=segment.start_seconds,
             end_seconds=segment.end_seconds,
             already_seen_keys=state.seen_rule_keys,
@@ -205,6 +210,8 @@ class ConversationManager:
             rag_result=rag_result_dict,
         )
 
+        moment_assessment = self._assess_moment(window_text, segment)
+
         seq_num = len(state.segments) + 1
         segment_id = f"seg_{seq_num:03d}_{uuid.uuid4().hex[:6]}"
         seg_record = CallSegmentRecord(
@@ -230,6 +237,7 @@ class ConversationManager:
             state.segments = state.segments[-self.settings.max_segments_per_call :]
 
         state.latest_assessment = assessment
+        state.latest_moment_assessment = moment_assessment
         self.repository.save(state)
 
         # Dispatch Telegram notification if enabled and risk threshold reached
@@ -246,6 +254,37 @@ class ConversationManager:
             duplicate_evidence_suppressed=segment_rule_res.duplicate_indicators_skipped,
             synced_keywords_triggered=list(segment_rule_res.synced_keywords_matched),
             assessment=assessment,
+            moment_assessment=moment_assessment,
+        )
+
+    @staticmethod
+    def _window_text(state, segment: CallSegmentRequest, max_previous: int = 2) -> str:
+        """This segment plus up to `max_previous` earlier segments from the same speaker, but only
+        while the earlier one ends mid-sentence (no . ! ? ।), so finished sentences never carry over."""
+        parts = [segment.text.strip()]
+        for prev in reversed(state.segments[-max_previous:] if max_previous else []):
+            prev_text = (prev.text or "").strip()
+            if prev.speaker != segment.speaker or not prev_text or prev_text[-1] in ".!?।|":
+                break
+            parts.insert(0, prev_text)
+        return " ".join(parts)
+
+    def _assess_moment(self, window_text: str, segment: CallSegmentRequest) -> ScamRiskAssessment:
+        """Scores only what was just said: fresh rule evaluation (no call memory) and no
+        conversation history for the contextual engine, so risk doesn't stick to later words."""
+        moment_rules, _ = self.rules_engine.evaluate(
+            window_text,
+            start_seconds=segment.start_seconds,
+            end_seconds=segment.end_seconds,
+        )
+        moment_context = self.contextual_analyzer.analyze(window_text, conversation_history=[])
+        return self.risk_scorer.score(
+            rule_result=moment_rules,
+            contextual_result=moment_context,
+            transcript_confidence=segment.transcript_confidence,
+            start_seconds=segment.start_seconds,
+            end_seconds=segment.end_seconds,
+            sync_status=self.keyword_sync.get_sync_status(),
         )
 
     def get_latest_risk(self, call_id: str) -> Optional[ScamRiskAssessment]:

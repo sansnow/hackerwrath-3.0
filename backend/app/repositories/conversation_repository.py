@@ -31,6 +31,7 @@ class CallConversationState:
     suppressed_protective_matches: List[str] = field(default_factory=list)
     total_duplicates_skipped: int = 0
     latest_assessment: Optional[ScamRiskAssessment] = None
+    latest_moment_assessment: Optional[ScamRiskAssessment] = None
 
     @property
     def expires_at(self) -> float:

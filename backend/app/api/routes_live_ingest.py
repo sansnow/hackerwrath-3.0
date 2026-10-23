@@ -38,10 +38,16 @@ from app.services.live_audio_processor import (
     get_broadcaster,
 )
 from app.services.telegram_service import TelegramAlertService, get_telegram_service
-from app.services.transcription_service import BaseSpeechToTextProvider
+from app.services.transcription_service import SUPPORTED_LANGUAGE_CODES, BaseSpeechToTextProvider
 
 logger = get_logger("scam_detector.live_ingest")
 router = APIRouter(prefix="/internal/live", tags=["live_ingest"])
+
+
+def _supported_language(code: Optional[str]) -> str:
+    """A language code the speech-to-text provider accepts, else "auto"."""
+    code = (code or "").strip()
+    return code if code in SUPPORTED_LANGUAGE_CODES else "auto"
 
 
 @router.get("/status")
@@ -348,8 +354,10 @@ async def websocket_browser_stream(
     """
     await websocket.accept()
     call_id = f"web_live_{uuid.uuid4().hex[:8]}"
+    # This socket gets its own call's events through `forward_to_browser`. It is not registered
+    # with the broadcaster, which would deliver every event twice and also push other calls'
+    # captions (e.g. a Telegram call running at the same time) into this one.
     broadcaster = get_broadcaster()
-    broadcaster.register(websocket)
 
     async def forward_to_browser(event: Dict[str, Any]) -> None:
         try:
@@ -363,7 +371,9 @@ async def websocket_browser_stream(
         conversation_manager=manager,
         telegram_service=telegram_service,
         broadcaster=broadcaster,
-        language_code="auto",
+        # `?language=hi-IN` (or a later {"type": "set_language"} message) pins Sarvam to one
+        # language; "auto" lets it guess per slice, which can drift into other Indian languages.
+        language_code=_supported_language(websocket.query_params.get("language")),
         on_event_callback=forward_to_browser,
     )
     session.start()
@@ -385,7 +395,7 @@ async def websocket_browser_stream(
                     if data.get("type") == "stop":
                         break
                     if data.get("type") == "set_language":
-                        session.language_code = data.get("language_code", "auto")
+                        session.language_code = _supported_language(data.get("language_code"))
                 except Exception:
                     continue
             elif "bytes" in msg and msg["bytes"]:
@@ -397,7 +407,6 @@ async def websocket_browser_stream(
     except Exception as exc:
         logger.error("Browser stream error: %s", exc)
     finally:
-        broadcaster.unregister(websocket)
         await session.stop_and_flush()
 
 

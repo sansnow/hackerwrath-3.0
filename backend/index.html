@@ -3,12 +3,20 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Suraksha 3.0 — AI Scam Call Detection & Negation Guard</title>
-    <meta name="description" content="Real-time AI-powered scam call detection and negation guard. Grounded by 2,841 real Indian fraud dialogues and live voice analysis." />
-    <meta name="theme-color" content="#07090E" />
+    <title>Edgerunners · Scam Check</title>
+    <meta name="description" content="Live scam warnings during phone calls, in English, Hindi and Punjabi." />
+    <meta name="theme-color" content="#F4F1EA" />
+    <script>
+      // Apply the saved edition before first paint, so Premium never flashes paper.
+      try {
+        if (localStorage.getItem('edgerunners_edition') === 'premium') {
+          document.documentElement.dataset.edition = 'premium';
+        }
+      } catch {}
+    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+Devanagari:wght@400;500;600;700&family=Noto+Sans+Gurmukhi:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Anek+Latin:wght@400;500;600;700;800&family=Anek+Devanagari:wght@400;500;600;700;800&family=Anek+Gurmukhi:wght@400;500;600;700;800&family=Tiro+Devanagari+Hindi&family=Tiro+Gurmukhi&family=Roboto+Mono:wght@500&display=swap" rel="stylesheet" />
   </head>
   <body>
     <div id="root"></div>

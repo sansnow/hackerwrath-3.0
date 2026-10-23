@@ -1,30 +1,28 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
-import {
-  Mic,
-  MicOff,
-  Radio,
-  Volume2,
-  RefreshCw,
-  AlertOctagon,
-  CheckCircle2,
-  AlertTriangle,
-  Globe,
-  Sparkles,
-  Zap,
-  Trash2,
-  Play,
-  Send,
-  ShieldAlert,
-  Flame,
-  PhoneCall,
-  Clock,
-  Headphones,
-  Sliders,
-  ChevronDown,
-  ChevronUp,
-} from 'lucide-react';
+import { useState, useRef, useEffect, useCallback, useImperativeHandle, forwardRef } from 'react';
+import { Mic, MicOff, AlertOctagon, Globe, Trash2, Play, PhoneCall, Headphones } from 'lucide-react';
 import { audioAlerts } from '../utils/audioAlerts';
-import type { RiskAssessment, RAGClassificationResponse } from '../hooks/useLiveDetection';
+import type { RiskAssessment } from '../hooks/useLiveDetection';
+import { fetchRag } from '../spell/rag';
+
+const PRESETS = [
+  { label: 'Asks for your OTP', text: 'Sir, please share your 6 digit OTP right now to verify account.' },
+  { label: 'Account blocked, wants your UPI PIN', text: 'Your bank account is blocked, give me your UPI PIN immediately.' },
+  { label: 'Digital arrest threat', text: 'You are under digital arrest by CBI Mumbai. Non-bailable warrant issued.' },
+  { label: 'An ordinary call', text: 'Hello, I want to check my account balance and get a mini statement.' },
+];
+
+const SOURCE_LABEL: Record<string, string> = {
+  microphone: 'microphone',
+  preset: 'test line',
+  telegram_bridge: 'Telegram bridge',
+  dual_capture: 'mic + call audio',
+};
+
+/** The home's shield starts and stops listening through this handle. */
+export interface LiveVoiceHandle {
+  start: () => void;
+  stop: () => void;
+}
 
 interface StoredUtterance {
   id: string;
@@ -43,18 +41,18 @@ interface LiveVoiceTesterProps {
   onAssessmentUpdate: (assessment: RiskAssessment | null) => void;
   onAudioLevelChange?: (level: number) => void;
   activeRisk: RiskAssessment | null;
+  onRecordingChange?: (recording: boolean) => void;
 }
 
-export default function LiveVoiceTester({
-  onAssessmentUpdate,
-  onAudioLevelChange,
-  activeRisk,
-}: LiveVoiceTesterProps) {
+const LiveVoiceTester = forwardRef<LiveVoiceHandle, LiveVoiceTesterProps>(function LiveVoiceTester(
+  { onAssessmentUpdate, onAudioLevelChange, activeRisk, onRecordingChange },
+  ref
+) {
   const [isRecording, setIsRecording] = useState(false);
   const [captureMode, setCaptureMode] = useState<'mic' | 'dual'>('mic');
   const [languageCode, setLanguageCode] = useState('auto');
   const [recordingSeconds, setRecordingSeconds] = useState(0);
-  const [statusText, setStatusText] = useState('Ready for live voice detection');
+  const [statusText, setStatusText] = useState('Put the call on speaker and tap the shield.');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [callId] = useState(() => `mic-live-${Date.now().toString(36)}`);
   const [audioLevel, setAudioLevel] = useState(0);
@@ -62,7 +60,6 @@ export default function LiveVoiceTester({
   const [liveTranscriptPreview, setLiveTranscriptPreview] = useState('');
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isSimulatingTelegram, setIsSimulatingTelegram] = useState(false);
-  const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -153,33 +150,19 @@ export default function LiveVoiceTester({
 
         if (res.ok) {
           const update = await res.json();
-          const assessment: RiskAssessment = update.assessment;
+          // The risk of this line, not the whole session's, so an ordinary line after a scam one
+          // isn't flagged too.
+          const assessment: RiskAssessment = update.moment_assessment ?? update.assessment;
           if (assessment) {
-            // Concurrently query RAG semantic retrieval endpoint
-            try {
-              const ragRes = await fetch('/rag/analyze', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  text: text.trim(),
-                  top_k: 3,
-                  include_retrieved_examples: true,
-                }),
-              });
-              if (ragRes.ok) {
-                assessment.rag_classification = await ragRes.json();
-              }
-            } catch (ragErr) {
-              console.debug('RAG query skipped:', ragErr);
-            }
-
+            // Nearest real dialogues from the RAG store, shown under "Sounds like".
+            assessment.rag_classification = await fetchRag(text.trim());
             onAssessmentUpdate(assessment);
 
             const keywords = (assessment.rule_analysis?.triggered_indicators || []).map(
               (i: any) => i.keyword_or_pattern
             );
 
-            // Add to speech history
+            // Add to temporary speech history
             const newUtterance: StoredUtterance = {
               id: `utt_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
               text: text.trim(),
@@ -205,9 +188,9 @@ export default function LiveVoiceTester({
             }
 
             setStatusText(
-              `Analyzed: "${text.slice(0, 32)}..." → ${assessment.risk_level} (${Math.round(
+              `Analyzed: "${text.slice(0, 35)}..." → ${assessment.risk_level} (${Math.round(
                 assessment.risk_score
-              )}%)`
+              )}/100)`
             );
           }
         }
@@ -253,21 +236,22 @@ export default function LiveVoiceTester({
           systemStreamRef.current = systemStream;
         } catch (displayErr) {
           console.warn('System audio selection cancelled or unavailable:', displayErr);
-          setStatusText('System audio sharing cancelled. Proceeding with Microphone only.');
+          setStatusText('Call audio wasn’t shared, so only the microphone is listening.');
         }
       }
 
       // Connect Direct WebSocket to Backend Live Stream
       const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsUrl = `${wsProtocol}//${window.location.host}/internal/live/browser-stream`;
+      // Pin Sarvam to the chosen language; on "auto" it guesses per slice and can drift.
+      const wsUrl = `${wsProtocol}//${window.location.host}/internal/live/browser-stream?language=${encodeURIComponent(languageCode)}`;
       const ws = new WebSocket(wsUrl);
       liveWsRef.current = ws;
 
       ws.onopen = () => {
         setStatusText(
           captureMode === 'dual' && systemStream
-            ? 'Dual Shield Active: Listening to Mic & System Audio...'
-            : 'Live Shield Active: Streaming audio to detection engine...'
+            ? 'Listening to the microphone and the call audio.'
+            : 'Listening. Every few words are checked as they are said.'
         );
       };
 
@@ -294,10 +278,10 @@ export default function LiveVoiceTester({
             setStoredUtterances((prev) => [newUtterance, ...prev]);
 
             if (onAssessmentUpdate) {
-              const triggered = (data.flaggedKeywords || []).map((k: string) => ({
+              const triggered = (data.flaggedKeywords || []).map((k: string, i: number) => ({
                 indicator_name: k,
                 keyword_or_pattern: k,
-                category: 'SUSPICIOUS_PHRASE',
+                category: data.flaggedCategories?.[i] || 'SUSPICIOUS_PHRASE',
                 weight: 15,
                 matched_text: k,
               }));
@@ -333,10 +317,12 @@ export default function LiveVoiceTester({
             }
 
             setStatusText(
-              `Live Caption: "${textChunk.slice(0, 30)}..." → ${data.riskLevel} (${Math.round(
+              `Live Caption (~${data.wordCount || 8} words): "${textChunk.slice(0, 30)}..." → ${data.riskLevel} (${Math.round(
                 data.riskScore
-              )}%)`
+              )}/100)`
             );
+          } else if (data.type === 'telegram_alert_sent') {
+            setStatusText(`Telegram alert sent (message #${data.messageId}).`);
           }
         } catch (wsErr) {
           console.warn('WS message parse error:', wsErr);
@@ -354,12 +340,15 @@ export default function LiveVoiceTester({
       const actx = new AudioCtx({ sampleRate: 16000 });
       audioContextRef.current = actx;
 
+      // Audio Graph with Mixer Bus
       const mixer = actx.createGain();
       mixer.gain.value = 1.0;
 
+      // Connect Mic
       const micSource = actx.createMediaStreamSource(micStream);
       micSource.connect(mixer);
 
+      // Connect System Audio if present
       if (systemStream && systemStream.getAudioTracks().length > 0) {
         const sysSource = actx.createMediaStreamSource(systemStream);
         sysSource.connect(mixer);
@@ -370,6 +359,7 @@ export default function LiveVoiceTester({
       mixer.connect(analyser);
       analyserRef.current = analyser;
 
+      // Extract 16kHz PCM16LE mono chunks and stream over WebSocket
       const processor = actx.createScriptProcessor(4096, 1, 1);
       processor.onaudioprocess = (e) => {
         if (!liveWsRef.current || liveWsRef.current.readyState !== WebSocket.OPEN) return;
@@ -383,6 +373,7 @@ export default function LiveVoiceTester({
       };
       mixer.connect(processor);
 
+      // Connect processor to destination with zero gain to prevent mic feedback echo
       const muteGain = actx.createGain();
       muteGain.gain.value = 0;
       processor.connect(muteGain);
@@ -433,13 +424,14 @@ export default function LiveVoiceTester({
       }
 
       setIsRecording(true);
-      setStatusText('Listening live · Transcribing and analyzing speech in real time...');
+      setStatusText('Listening. Every few words are checked as they are said.');
 
+      // Recording timer
       timerRef.current = setInterval(() => {
         setRecordingSeconds((prev) => prev + 1);
       }, 1000);
     } catch (err: any) {
-      setErrorMsg(err.message || 'Microphone access denied. Please grant microphone permissions.');
+      setErrorMsg(err.message || 'Microphone access denied or unavailable.');
       setIsRecording(false);
     }
   };
@@ -453,13 +445,13 @@ export default function LiveVoiceTester({
       } catch {}
     }
     stopRecordingSync();
-    setStatusText('Session ended. Audio buffers processed.');
+    setStatusText('Stopped listening. This session is saved.');
   };
 
   // Test Simulation of Telegram VoIP Call Bridge
   const handleTestTelegramBridge = async () => {
     setIsSimulatingTelegram(true);
-    setStatusText('Simulating Telegram VoIP Call Bridge Spike...');
+    setStatusText('Sending a test call through the Telegram bridge…');
     try {
       const res = await fetch('/internal/live/spike', {
         method: 'POST',
@@ -491,15 +483,16 @@ export default function LiveVoiceTester({
 
         setStoredUtterances((prev) => [newUtterance, ...prev]);
         audioAlerts.playHighRiskAlert();
-        setStatusText('Telegram VoIP Call Bridge: Intercepted & Flagged!');
+        setStatusText('The Telegram bridge test call reached the detector and was flagged.');
       }
     } catch (err: any) {
-      setErrorMsg('Failed to test Telegram bridge: ' + err.message);
+      setErrorMsg('Failed to test Telegram bridge spike: ' + err.message);
     } finally {
       setIsSimulatingTelegram(false);
     }
   };
 
+  // Highlight flagged keywords in text
   const renderHighlightedText = (text: string, keywords: string[]) => {
     if (!keywords || keywords.length === 0) return text;
     const escaped = keywords
@@ -509,13 +502,14 @@ export default function LiveVoiceTester({
     if (!escaped) return text;
 
     const regex = new RegExp(`(${escaped})`, 'gi');
+    const isKeyword = new RegExp(`^(${escaped})$`, 'i');
     const parts = text.split(regex);
 
     return parts.map((part, i) =>
-      regex.test(part) ? (
+      isKeyword.test(part) ? (
         <span
           key={i}
-          className="px-1.5 py-0.5 rounded bg-rose-500/25 text-rose-300 border border-rose-500/40 font-bold mx-0.5"
+          className="px-1 rounded-md bg-danger text-on-danger font-bold"
         >
           {part}
         </span>
@@ -525,357 +519,239 @@ export default function LiveVoiceTester({
     );
   };
 
-  const formatTimer = (secs: number) => {
-    const m = Math.floor(secs / 60).toString().padStart(2, '0');
-    const s = (secs % 60).toString().padStart(2, '0');
-    return `${m}:${s}`;
-  };
+  // Always call the latest start/stop, whichever render the shield was tapped in.
+  const controlsRef = useRef({ startRecording, stopRecording, isRecording });
+  controlsRef.current = { startRecording, stopRecording, isRecording };
+  useImperativeHandle(
+    ref,
+    () => ({
+      start: () => {
+        if (!controlsRef.current.isRecording) controlsRef.current.startRecording();
+      },
+      stop: () => {
+        if (controlsRef.current.isRecording) controlsRef.current.stopRecording();
+      },
+    }),
+    []
+  );
+
+  useEffect(() => {
+    onRecordingChange?.(isRecording);
+  }, [isRecording, onRecordingChange]);
+
+  const danger = activeRisk?.risk_level === 'HIGH' || activeRisk?.risk_level === 'CRITICAL';
 
   return (
-    <div className="glass-card p-6 sm:p-8 space-y-8 border border-[#1E2536] rounded-3xl">
-      {/* ─── Header: Clear & Spacious ─── */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 pb-4 border-b border-[#1E2536]">
+    <div className="sb-card p-5 sm:p-6 flex flex-col gap-5">
+      {/* Where the sound comes from, and in which language */}
+      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
         <div>
-          <div className="flex items-center gap-2.5">
-            <span className={`w-2.5 h-2.5 rounded-full ${isRecording ? 'bg-rose-500 animate-ping' : 'bg-[#00F0FF]'}`} />
-            <h2 className="text-xl font-bold text-white tracking-wide">Live Microphone Shield</h2>
-            <span className="text-[10px] font-mono px-2.5 py-0.5 rounded-full bg-[#00F0FF]/10 text-[#00F0FF] border border-[#00F0FF]/25">
-              16kHz Continuous
-            </span>
-          </div>
-          <p className="text-xs text-[#A2A9BA] mt-1">
-            Put your phone on speaker. Suraksha listens to conversation audio and flags scam coercion in real time.
+          <div className="sb-eyebrow">Live check</div>
+          <h3 className="text-[22px] leading-7 font-extrabold text-head mt-1">
+            {isRecording ? `Listening · ${recordingSeconds} s` : isTranscribing ? 'Checking what was said' : 'Ready when you are'}
+          </h3>
+          <p className="text-[13px] text-faint mt-0.5 max-w-md" aria-live="polite">
+            {statusText}
           </p>
         </div>
-
-        {/* Secondary Settings Toggle Button */}
-        <button
-          onClick={() => setShowAdvancedSettings(!showAdvancedSettings)}
-          className="px-3.5 py-1.5 rounded-full bg-[#11141C] hover:bg-[#1A202E] text-xs font-mono text-[#A2A9BA] hover:text-white border border-[#1E2536] transition-all flex items-center gap-2 cursor-pointer self-start sm:self-auto"
-        >
-          <Sliders className="w-3.5 h-3.5 text-[#00F0FF]" />
-          <span>{showAdvancedSettings ? 'Hide Audio Settings' : 'Audio & Lang Settings'}</span>
-          {showAdvancedSettings ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <label className="flex flex-col gap-1">
+            <span className="text-[11px] font-bold text-faint tracking-[0.12em] uppercase flex items-center gap-1">
+              <Headphones className="w-3.5 h-3.5" /> Sound
+            </span>
+            <select
+              value={captureMode}
+              onChange={(e) => setCaptureMode(e.target.value as 'mic' | 'dual')}
+              disabled={isRecording}
+              className="sb-input px-3 py-2 text-[13px] font-semibold"
+              title="Mic only (speaker phone) or Dual (also captures Telegram or system call audio)"
+            >
+              <option value="mic">Microphone only</option>
+              <option value="dual">Mic + call audio (headphones)</option>
+            </select>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-[11px] font-bold text-faint tracking-[0.12em] uppercase flex items-center gap-1">
+              <Globe className="w-3.5 h-3.5" /> Language
+            </span>
+            <select
+              value={languageCode}
+              onChange={(e) => setLanguageCode(e.target.value)}
+              disabled={isRecording}
+              className="sb-input px-3 py-2 text-[13px] font-semibold"
+            >
+              <option value="auto">Any (Hindi, English, Punjabi)</option>
+              <option value="hi-IN">हिन्दी · Hindi</option>
+              <option value="en-IN">English (India)</option>
+              <option value="pa-IN">ਪੰਜਾਬੀ · Punjabi</option>
+            </select>
+          </label>
+        </div>
       </div>
 
-      {/* ─── Collapsible Audio Settings Tray (Keeps main interface clean) ─── */}
-      {showAdvancedSettings && (
-        <div className="p-4 sm:p-5 rounded-2xl bg-[#090D16] border border-[#1E2536] space-y-4 animate-slide-up">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {/* Audio Source */}
-            <div>
-              <label className="block text-[11px] font-mono uppercase text-[#70798C] mb-1.5 flex items-center gap-1.5">
-                <Headphones className="w-3.5 h-3.5 text-[#8B7CFF]" />
-                Audio Ingestion Mode
-              </label>
-              <select
-                value={captureMode}
-                onChange={(e) => setCaptureMode(e.target.value as 'mic' | 'dual')}
-                disabled={isRecording}
-                className="w-full px-3 py-2 rounded-xl text-xs font-mono bg-[#11141C] text-white border border-[#1E2536] focus:outline-none focus:border-[#00F0FF]"
-              >
-                <option value="mic">🎙️ Microphone Only (Speakerphone mode)</option>
-                <option value="dual">🎧 Dual Stream: Mic + Telegram Audio (Headphones)</option>
-              </select>
-            </div>
-
-            {/* Language */}
-            <div>
-              <label className="block text-[11px] font-mono uppercase text-[#70798C] mb-1.5 flex items-center gap-1.5">
-                <Globe className="w-3.5 h-3.5 text-[#72D7E8]" />
-                Speech Language
-              </label>
-              <select
-                value={languageCode}
-                onChange={(e) => setLanguageCode(e.target.value)}
-                disabled={isRecording}
-                className="w-full px-3 py-2 rounded-xl text-xs font-mono bg-[#11141C] text-white border border-[#1E2536] focus:outline-none focus:border-[#00F0FF]"
-              >
-                <option value="auto">🌐 Auto Detect (Hindi / English / Punjabi)</option>
-                <option value="hi-IN">🇮🇳 Hindi (हिन्दी)</option>
-                <option value="en-IN">🇬🇧 Indian English</option>
-                <option value="pa-IN">🇵🇦 Punjabi (ਪੰਜਾਬੀ)</option>
-              </select>
-            </div>
-          </div>
-
-          <div className="pt-2 border-t border-[#1E2536] flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs">
-            <span className="text-[#A2A9BA] text-[11px]">
-              Telegram Live VoIP Call Hook: Test WebSocket ingest via synthetic call spike.
-            </span>
-            <button
-              onClick={handleTestTelegramBridge}
-              disabled={isSimulatingTelegram}
-              className="px-3 py-1.5 rounded-full bg-[#171B26] hover:bg-[#202636] text-[#8B7CFF] border border-[#1E2536] text-xs font-mono flex items-center gap-1.5 cursor-pointer"
-            >
-              <Sparkles className="w-3 h-3 text-[#F2C879]" />
-              <span>{isSimulatingTelegram ? 'Testing...' : 'Test Telegram Bridge Spike'}</span>
-            </button>
-          </div>
+      {captureMode === 'dual' && !isRecording && (
+        <div className="sb-soft rounded-[16px] px-4 py-3 text-[13px] text-muted flex items-start gap-2.5">
+          <Headphones className="w-4 h-4 text-accent shrink-0 mt-0.5" />
+          <span>
+            When you start, your browser asks what to share. Pick the <strong className="text-head">Telegram window</strong> and tick{' '}
+            <strong className="text-head">Also share system audio</strong>, so the caller’s voice is heard through your headphones.
+          </span>
         </div>
       )}
 
-      {/* ─── MAIN MICROPHONE INTERACTION ARENA (Spacious, Central, Uncluttered) ─── */}
-      <div className="flex flex-col items-center justify-center py-6 sm:py-10 text-center space-y-6">
-        {/* Large Central Microphone Button */}
-        <div className="relative">
-          {/* Audio Pulsing Rings when recording */}
-          {isRecording && (
-            <>
-              <div
-                className="absolute -inset-4 rounded-full border-2 border-rose-500/40 animate-ping pointer-events-none"
-                style={{ transform: `scale(${1 + audioLevel * 1.4})` }}
-              />
-              <div
-                className="absolute -inset-8 rounded-full border border-[#00F0FF]/30 animate-pulse pointer-events-none"
-                style={{ transform: `scale(${1 + audioLevel * 1.8})` }}
-              />
-            </>
-          )}
-
-          <button
-            onClick={isRecording ? stopRecording : startRecording}
-            disabled={isTranscribing}
-            aria-label={isRecording ? 'Stop Recording' : 'Start Recording'}
-            className={`
-              relative z-10 w-32 h-32 sm:w-36 sm:h-36 rounded-full flex flex-col items-center justify-center
-              transition-all duration-300 transform hover:scale-105 active:scale-95 cursor-pointer shadow-2xl
-              ${
-                isRecording
-                  ? 'bg-gradient-to-tr from-rose-600 via-red-600 to-rose-500 text-white shadow-[0_0_50px_rgba(244,63,94,0.6)] animate-pulse'
-                  : 'btn-cyan text-[#040810] shadow-[0_0_40px_rgba(0,240,255,0.45)]'
-              }
-            `}
-          >
-            {isRecording ? (
-              <MicOff className="w-12 h-12 stroke-[2.2]" />
-            ) : (
-              <Mic className="w-12 h-12 stroke-[2.2]" />
-            )}
-            <span className="text-xs font-mono font-bold uppercase tracking-wider mt-2">
-              {isRecording ? 'Stop Shield' : 'Tap to Listen'}
-            </span>
-          </button>
-        </div>
-
-        {/* Clear State Text */}
-        <div className="space-y-1 max-w-md mx-auto">
-          <div className="flex items-center justify-center gap-2">
-            <span className={`text-base font-bold ${isRecording ? 'text-rose-400' : 'text-white'}`}>
-              {isRecording
-                ? `Recording Active (${formatTimer(recordingSeconds)})`
-                : isTranscribing
-                ? 'Transcribing & Evaluating Intent...'
-                : 'Shield Standing By'}
-            </span>
-          </div>
-          <p className="text-xs text-[#A2A9BA] leading-relaxed">{statusText}</p>
-        </div>
-
-        {/* Symmetrical Balanced Waveform Bar */}
-        <div className="w-full max-w-xs flex items-center gap-1.5 h-7 px-4 bg-[#090D16] border border-[#1E2536] rounded-full justify-center">
-          {[...Array(24)].map((_, i) => {
-            const h = Math.max(3, Math.sin(i * 0.35 + audioLevel * 10) * audioLevel * 22);
+      {/* The voice, as a breathing line */}
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={isRecording ? stopRecording : startRecording}
+          disabled={isTranscribing}
+          className={`sb-btn shrink-0 rounded-full w-12 h-12 p-0 ${isRecording ? 'sb-btn-end' : 'sb-btn-primary'}`}
+          aria-label={isRecording ? 'Stop listening' : 'Start listening'}
+          style={isRecording ? { boxShadow: 'none' } : undefined}
+        >
+          {isRecording ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
+        </button>
+        <div className="flex-1 h-12 rounded-full bg-surface flex items-center justify-center gap-[5px] px-5 overflow-hidden" aria-hidden="true">
+          {[...Array(32)].map((_, i) => {
+            const h = Math.max(4, Math.abs(Math.sin(i * 0.45 + audioLevel * 10)) * audioLevel * 34 + 4);
             return (
-              <div
+              <span
                 key={i}
-                className="w-1 rounded-full transition-all duration-75"
+                className="w-[3px] rounded-full transition-all duration-75"
                 style={{
-                  height: `${isRecording ? h : 3}px`,
-                  background:
-                    activeRisk?.risk_level === 'HIGH' || activeRisk?.risk_level === 'CRITICAL'
-                      ? '#F08091'
-                      : isRecording
-                      ? '#00F0FF'
-                      : 'rgba(241, 243, 248, 0.2)',
+                  height: `${isRecording ? h : 4}px`,
+                  background: danger ? 'var(--sb-end)' : isRecording ? 'var(--sb-accent)' : 'var(--sb-off)',
                 }}
               />
             );
           })}
         </div>
-
-        {/* Live Interim Transcript Bubble */}
-        {isRecording && liveTranscriptPreview && (
-          <div className="w-full max-w-lg p-4 rounded-2xl bg-[#090D16] border border-[#00F0FF]/30 text-xs text-white text-left animate-slide-up shadow-lg">
-            <span className="text-[10px] font-mono text-[#00F0FF] font-semibold block mb-1">
-              🎙️ Live Interim Speech:
-            </span>
-            <p className="italic text-[#E8ECF2] leading-relaxed">{liveTranscriptPreview}</p>
-          </div>
-        )}
       </div>
 
-      {/* Error Alert with Permission Retry */}
+      {isRecording && liveTranscriptPreview && (
+        <div className="sb-soft rounded-[16px] px-4 py-3 sb-rise">
+          <span className="text-[11px] font-bold tracking-[0.12em] uppercase text-faint block mb-1">Hearing</span>
+          <p className="text-[15px] text-ink italic">{liveTranscriptPreview}</p>
+        </div>
+      )}
+
       {errorMsg && (
-        <div className="p-4 rounded-2xl border border-rose-500/40 bg-rose-950/20 text-rose-200 text-xs flex items-center justify-between gap-3 animate-slide-up">
-          <div className="flex items-center gap-2.5">
-            <AlertOctagon className="w-5 h-5 shrink-0 text-rose-400" />
-            <span>{errorMsg}</span>
-          </div>
-          <button
-            onClick={() => {
-              setErrorMsg(null);
-              startRecording();
-            }}
-            className="px-3 py-1 rounded-full bg-rose-500 text-white font-bold text-[11px] hover:bg-rose-600 transition-colors cursor-pointer shrink-0"
-          >
-            Retry Access
+        <div className="rounded-[16px] bg-danger-soft text-danger-ink px-4 py-3 text-[13px] font-semibold flex items-center justify-between gap-3">
+          <span className="flex items-center gap-2">
+            <AlertOctagon className="w-4 h-4 shrink-0" />
+            {errorMsg}
+          </span>
+          <button type="button" onClick={() => setErrorMsg(null)} className="underline shrink-0">
+            Dismiss
           </button>
         </div>
       )}
 
-      {/* ─── QUICK TEST PHRASES (Clean & Symmetrical) ─── */}
-      <div className="p-5 rounded-2xl bg-[#090D16] border border-[#1E2536] space-y-3">
+      {/* Say it for them: one tap sends a caller's line through the detector */}
+      <div className="flex flex-col gap-2.5">
         <div className="flex items-center justify-between">
-          <span className="text-xs font-semibold text-[#A2A9BA] flex items-center gap-1.5">
-            <Zap className="w-3.5 h-3.5 text-[#F2C879]" />
-            <span>One-Click Voice Test Phrases</span>
-          </span>
-          <span className="text-[10px] text-[#70798C] font-mono">Instant Dual Engine Check</span>
+          <span className="sb-eyebrow">Try a caller’s line</span>
+          <span className="text-[12px] text-faint">sent to the real detector</span>
         </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs">
-          <button
-            onClick={() =>
-              evaluateTranscript('Sir, please share your 6 digit OTP right now to verify your bank account.', 'preset')
-            }
-            className="p-3 rounded-xl bg-[#11141C] hover:bg-[#1A202E] text-left border border-[#1E2536] hover:border-rose-500/50 text-white transition-all flex items-center justify-between group cursor-pointer"
-          >
-            <span className="line-clamp-1 group-hover:text-rose-300">🚨 "Please share your 6-digit OTP right now"</span>
-            <Play className="w-3 h-3 shrink-0 text-rose-400 fill-current ml-2" />
-          </button>
-
-          <button
-            onClick={() =>
-              evaluateTranscript('Your electricity connection will be disconnected today. Download AnyDesk.', 'preset')
-            }
-            className="p-3 rounded-xl bg-[#11141C] hover:bg-[#1A202E] text-left border border-[#1E2536] hover:border-rose-500/50 text-white transition-all flex items-center justify-between group cursor-pointer"
-          >
-            <span className="line-clamp-1 group-hover:text-rose-300">🚨 "Power disconnected today, download AnyDesk"</span>
-            <Play className="w-3 h-3 shrink-0 text-rose-400 fill-current ml-2" />
-          </button>
-
-          <button
-            onClick={() =>
-              evaluateTranscript('This is Officer Verma from CBI Cyber Cell. An arrest warrant is issued in your Aadhaar name.', 'preset')
-            }
-            className="p-3 rounded-xl bg-[#11141C] hover:bg-[#1A202E] text-left border border-[#1E2536] hover:border-rose-500/50 text-white transition-all flex items-center justify-between group cursor-pointer"
-          >
-            <span className="line-clamp-1 group-hover:text-rose-300">🚨 "Digital arrest by CBI, arrest warrant issued"</span>
-            <Play className="w-3 h-3 shrink-0 text-rose-400 fill-current ml-2" />
-          </button>
-
-          <button
-            onClick={() =>
-              evaluateTranscript('Security reminder from your bank: never share your OTP or UPI PIN with anyone.', 'preset')
-            }
-            className="p-3 rounded-xl bg-[#11141C] hover:bg-[#1A202E] text-left border border-[#1E2536] hover:border-[#63D6A5]/50 text-white transition-all flex items-center justify-between group cursor-pointer"
-          >
-            <span className="line-clamp-1 group-hover:text-[#63D6A5]">✅ "Never share your OTP with anyone" (Negation Safe)</span>
-            <Play className="w-3 h-3 shrink-0 text-[#63D6A5] fill-current ml-2" />
-          </button>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          {PRESETS.map((p) => (
+            <button
+              key={p.label}
+              type="button"
+              onClick={() => evaluateTranscript(p.text, 'preset')}
+              className="group text-left rounded-[16px] bg-surface hover:bg-accent-soft px-4 py-3 transition-colors flex items-center justify-between gap-3 active:scale-[0.98]"
+            >
+              <span className="min-w-0">
+                <span className="block text-[14px] font-extrabold text-head">{p.label}</span>
+                <span className="block text-[12px] text-faint truncate">“{p.text}”</span>
+              </span>
+              <Play className="w-4 h-4 shrink-0 text-accent fill-current" />
+            </button>
+          ))}
         </div>
       </div>
 
-      {/* ─── TEMPORARILY STORED SPEECH HISTORY ─── */}
-      <div className="space-y-3 pt-2">
-        <div className="flex items-center justify-between">
-          <span className="text-xs font-semibold text-[#A2A9BA] flex items-center gap-2">
-            <Clock className="w-3.5 h-3.5 text-[#00F0FF]" />
-            <span>Live Speech History ({storedUtterances.length})</span>
-          </span>
+      {/* Telegram VoIP call bridge (onfloor) */}
+      <div className="rounded-[18px] border border-line px-4 py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <PhoneCall className="w-4 h-4 text-accent" />
+            <span className="text-[14px] font-extrabold text-head">Telegram call bridge</span>
+            <code className="font-mono text-[11px] px-2 py-0.5 rounded-full bg-accent-soft text-on-accent-soft">/internal/live/ingest</code>
+          </div>
+          <p className="text-[12px] text-faint mt-1">
+            Brings live Telegram calls from <code className="font-mono">py-tgcalls</code> into the same detector.
+          </p>
+        </div>
+        <button type="button" onClick={handleTestTelegramBridge} disabled={isSimulatingTelegram} className="sb-btn sb-btn-outline shrink-0 text-[14px]">
+          {isSimulatingTelegram ? 'Sending…' : 'Send a test call'}
+        </button>
+      </div>
 
+      {/* What was heard this session */}
+      <div className="flex flex-col gap-3">
+        <div className="flex items-center justify-between">
+          <span className="sb-eyebrow">Heard this session · {storedUtterances.length}</span>
           {storedUtterances.length > 0 && (
             <button
+              type="button"
               onClick={() => setStoredUtterances([])}
-              className="text-[11px] text-[#70798C] hover:text-white flex items-center gap-1 hover:underline cursor-pointer"
+              className="text-[12px] font-semibold text-faint hover:text-ink flex items-center gap-1"
             >
-              <Trash2 className="w-3 h-3" />
-              <span>Clear History</span>
+              <Trash2 className="w-3.5 h-3.5" />
+              Clear
             </button>
           )}
         </div>
 
         {storedUtterances.length === 0 ? (
-          <div className="p-6 rounded-2xl bg-[#090D16] border border-[#1E2536] text-center text-xs text-[#70798C] italic">
-            No speech has been recorded in this session. Tap the microphone above or click any test phrase to see real-time fraud analysis.
-          </div>
+          <p className="sb-soft rounded-[16px] px-4 py-6 text-center text-[13px] text-faint">
+            Nothing yet. Tap the shield and say a line like “tell me your OTP”, or try one above.
+          </p>
         ) : (
-          <div className="space-y-3 max-h-[340px] overflow-y-auto pr-1">
+          <ul className="flex flex-col gap-2.5 max-h-[380px] overflow-y-auto pr-1 list-none">
             {storedUtterances.map((utt) => {
               const isDanger = utt.riskLevel === 'HIGH' || utt.riskLevel === 'CRITICAL';
               const isCaution = utt.riskLevel === 'MEDIUM';
-
               return (
-                <div
+                <li
                   key={utt.id}
-                  className={`p-4 rounded-2xl border transition-all animate-slide-up ${
-                    isDanger
-                      ? 'border-rose-500/40 bg-rose-950/10'
-                      : isCaution
-                      ? 'border-amber-500/40 bg-amber-950/10'
-                      : 'border-[#1E2536] bg-[#090D16]'
+                  className={`rounded-[18px] px-4 py-3 sb-rise border ${
+                    isDanger ? 'bg-danger-soft border-danger/20' : isCaution ? 'bg-warn-soft border-warn/40' : 'bg-card border-line'
                   }`}
                 >
-                  <div className="flex items-center justify-between text-[11px] text-[#70798C] mb-2 font-mono">
-                    <span className="flex items-center gap-1.5">
-                      <span className={`w-1.5 h-1.5 rounded-full ${isDanger ? 'bg-rose-400' : 'bg-[#63D6A5]'}`} />
-                      <span>{new Date(utt.timestamp).toLocaleTimeString()}</span>
-                      <span className="text-[#1E2536]">·</span>
-                      <span className="uppercase text-[10px] text-[#A2A9BA]">
-                        {utt.source.replace('_', ' ')}
-                      </span>
+                  <div className="flex items-center justify-between gap-2 text-[11px] text-faint mb-1.5">
+                    <span className="font-semibold">
+                      {new Date(utt.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })} ·{' '}
+                      {SOURCE_LABEL[utt.source] || utt.source}
                     </span>
-
                     <span
-                      className={`px-2.5 py-0.5 rounded-full font-bold text-[10px] border ${
-                        utt.riskLevel === 'CRITICAL'
-                          ? 'bg-rose-500/20 text-rose-300 border-rose-500/40'
-                          : isDanger
-                          ? 'bg-rose-500/15 text-rose-300 border-rose-500/30'
-                          : isCaution
-                          ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
-                          : 'bg-[#63D6A5]/15 text-[#63D6A5] border-[#63D6A5]/30'
+                      className={`px-2 py-0.5 rounded-full font-bold tracking-[0.08em] ${
+                        isDanger ? 'bg-danger text-on-danger' : isCaution ? 'bg-warn text-on-warn' : 'bg-accent-soft text-on-accent-soft'
                       }`}
                     >
-                      {utt.riskLevel} ({Math.round(utt.riskScore)}%)
+                      {isDanger ? 'HIGH RISK' : isCaution ? 'POSSIBLE RISK' : 'NO ASK'}
                     </span>
                   </div>
-
-                  <p className="text-xs font-medium text-white leading-relaxed mb-2">
-                    {renderHighlightedText(utt.text, utt.flaggedKeywords)}
-                  </p>
-
+                  <p className="text-[15px] leading-[22px] font-semibold text-ink">{renderHighlightedText(utt.text, utt.flaggedKeywords)}</p>
                   {utt.flaggedKeywords && utt.flaggedKeywords.length > 0 && (
-                    <div className="flex items-center gap-1.5 flex-wrap mt-2 pt-2 border-t border-[#1E2536]">
-                      <span className="text-[10px] font-mono text-rose-400 font-semibold flex items-center gap-1">
-                        <Flame className="w-3 h-3 text-rose-400" />
-                        Flagged Threats:
-                      </span>
+                    <div className="flex flex-wrap gap-1.5 mt-2">
                       {utt.flaggedKeywords.map((kw, i) => (
-                        <span
-                          key={i}
-                          className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-rose-500/15 text-rose-300 border border-rose-500/30"
-                        >
+                        <span key={i} className="text-[11px] font-mono px-2 py-0.5 rounded-full bg-card text-danger-ink">
                           {kw}
                         </span>
                       ))}
                     </div>
                   )}
-
-                  {utt.safeAction && isDanger && (
-                    <div className="mt-2 text-xs text-amber-200 bg-amber-950/20 p-2.5 rounded-xl border border-amber-500/30 flex items-center gap-2">
-                      <ShieldAlert className="w-4 h-4 text-amber-400 shrink-0" />
-                      <span>{utt.safeAction}</span>
-                    </div>
-                  )}
-                </div>
+                  {utt.safeAction && isDanger && <p className="mt-2 text-[13px] font-semibold text-danger-ink">{utt.safeAction}</p>}
+                </li>
               );
             })}
-          </div>
+          </ul>
         )}
       </div>
     </div>
   );
-}
+});
+
+export default LiveVoiceTester;

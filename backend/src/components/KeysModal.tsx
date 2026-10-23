@@ -1,21 +1,13 @@
-import { useState } from 'react';
-import { X, Key, CheckCircle2, Clock, AlertCircle, Copy, Check, ExternalLink, ShieldCheck } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { X, Copy, Check } from 'lucide-react';
 
 interface KeysModalProps {
   isOpen: boolean;
   onClose: () => void;
 }
 
-export default function KeysModal({ isOpen, onClose }: KeysModalProps) {
-  const [copied, setCopied] = useState(false);
-  const [testingKey, setTestingKey] = useState(false);
-  const [testResult, setTestResult] = useState<string | null>(null);
-
-  if (!isOpen) return null;
-
-  const handleCopyEnv = () => {
-    const envContent = `# Sarvam AI Configuration (Speech-to-Text)
-SARVAM_API_KEY="sk_ccuk587o_oSe0neRNm8GhXzTotbDMvQRV"
+const ENV_TEMPLATE = `# Sarvam AI Configuration (Speech-to-Text)
+SARVAM_API_KEY="your_sarvam_api_key_here"
 SARVAM_BASE_URL="https://api.sarvam.ai"
 SARVAM_STT_MODEL="saaras:v3"
 
@@ -33,155 +25,114 @@ TELEGRAM_AUTHORIZED_USERS=""
 # Optional Gemini AI Director
 # GEMINI_API_KEY="your_gemini_key_here"`;
 
-    navigator.clipboard.writeText(envContent);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
+type HealthCheck = { state: 'checking' | 'ok' | 'demo' | 'offline'; text: string };
 
-  const handleTestBackend = async () => {
-    setTestingKey(true);
-    setTestResult(null);
+export default function KeysModal({ isOpen, onClose }: KeysModalProps) {
+  const [copied, setCopied] = useState(false);
+  const [check, setCheck] = useState<HealthCheck>({ state: 'checking', text: 'Checking the detector…' });
+
+  const runCheck = async () => {
+    setCheck({ state: 'checking', text: 'Checking the detector…' });
     try {
       const res = await fetch('/health');
       const data = await res.json();
       if (data.status === 'ok') {
-        const stt = data.modules?.speech_to_text;
-        setTestResult(
-          `✅ Backend Connected! Sarvam Saaras STT (${stt?.model || 'v3'}) is ${
-            data.sarvam_configured ? 'Active with Live API Key' : 'Online'
-          }.`
+        const model = data.modules?.speech_to_text?.model || 'saaras:v3';
+        setCheck(
+          data.sarvam_configured
+            ? { state: 'ok', text: `Connected. Sarvam speech to text (${model}) has a key.` }
+            : { state: 'demo', text: 'Connected, but no Sarvam key is set: speech to text runs in demo mode.' }
         );
       } else {
-        setTestResult('⚠️ Backend returned non-ok response.');
+        setCheck({ state: 'offline', text: 'The detector answered, but not with “ok”.' });
       }
     } catch (e: any) {
-      setTestResult(`❌ Connection error: ${e.message}`);
-    } finally {
-      setTestingKey(false);
+      setCheck({ state: 'offline', text: `Can’t reach the detector: ${e.message}` });
     }
   };
 
+  useEffect(() => {
+    if (isOpen) runCheck();
+  }, [isOpen]);
+
+  if (!isOpen) return null;
+
+  const handleCopyEnv = () => {
+    navigator.clipboard.writeText(ENV_TEMPLATE);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const rows: Array<{ name: string; tag: string; tone: 'on' | 'later' | 'optional'; body: string }> = [
+    {
+      name: 'Sarvam speech to text',
+      tag: check.state === 'ok' ? 'Key set' : check.state === 'demo' ? 'No key' : '—',
+      tone: check.state === 'ok' ? 'on' : 'optional',
+      body: 'Turns calls into words (Saaras v3) in Hindi, Indian English and Punjabi.',
+    },
+    {
+      name: 'Contextual detector',
+      tag: 'Built in',
+      tone: 'on',
+      body: 'Reads what the caller is after and ignores safety advice like “never share your OTP”. A Gemini key is optional.',
+    },
+    {
+      name: 'Telegram alerts',
+      tag: 'Optional',
+      tone: 'optional',
+      body: 'Sends a protective alert to your Telegram chat on high risk, with personal details scrubbed.',
+    },
+    {
+      name: 'Twilio phone calls',
+      tag: 'Later',
+      tone: 'later',
+      body: 'For real carrier calls. Not needed for the demo: the microphone works with a call on speaker.',
+    },
+  ];
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/75 backdrop-blur-md" onClick={onClose} />
+      <div className="absolute inset-0 sb-fade backdrop-blur-sm" style={{ background: 'var(--sb-scrim)' }} onClick={onClose} />
 
-      {/* Modal */}
-      <div className="glass-card relative max-w-xl w-full p-6 sm:p-8 animate-slide-up border-[var(--purple-border)]">
-        {/* Close Button */}
-        <button
-          onClick={onClose}
-          className="absolute top-5 right-5 p-2 rounded-xl hover:bg-white/10 transition-colors text-white/70 hover:text-white"
-        >
+      <div role="dialog" aria-modal="true" aria-labelledby="sb-keys-title" className="relative max-w-xl w-full max-h-[92vh] overflow-y-auto rounded-[32px] bg-paper p-6 sm:p-8 sb-rise shadow-2xl">
+        <button type="button" onClick={onClose} aria-label="Close" className="sb-btn sb-btn-ghost absolute top-4 right-4 w-11 h-11 p-0 rounded-full">
           <X className="w-5 h-5" />
         </button>
 
-        {/* Header */}
-        <div className="flex items-center gap-3 mb-6">
-          <div className="w-12 h-12 rounded-2xl bg-[var(--purple-dim)]/30 flex items-center justify-center text-[var(--purple-bright)]">
-            <Key className="w-6 h-6" />
-          </div>
-          <div>
-            <h2 className="text-xl font-bold text-white">API Keys & Deployment Status</h2>
-            <p className="text-xs text-[var(--text-muted)]">
-              Real-time check for Sarvam AI, Twilio, and Contextual AI
-            </p>
-          </div>
-        </div>
+        <div className="sb-eyebrow">Setup</div>
+        <h2 id="sb-keys-title" className="sb-display text-[34px] mt-1 mb-1">Keys and services</h2>
+        <p
+          className={`text-[14px] font-semibold mb-5 ${check.state === 'offline' ? 'text-danger' : check.state === 'demo' ? 'text-warn-ink' : 'text-muted'}`}
+          aria-live="polite"
+        >
+          {check.text}
+        </p>
 
-        {/* Key Items List */}
-        <div className="space-y-3 mb-6">
-          {/* 1. Sarvam AI */}
-          <div className="glass p-4 rounded-xl border-emerald-500/30 bg-emerald-950/10">
-            <div className="flex items-center justify-between mb-1.5">
-              <div className="flex items-center gap-2">
-                <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                <span className="text-sm font-semibold text-white">SARVAM_API_KEY</span>
+        <ul className="flex flex-col gap-2.5 mb-6 list-none">
+          {rows.map((row) => (
+            <li key={row.name} className="sb-card px-4 py-3.5">
+              <div className="flex items-center justify-between gap-3 mb-1">
+                <span className="text-[15px] font-extrabold text-head">{row.name}</span>
+                <span
+                  className={`sb-chip text-[11px] px-2.5 py-1 ${
+                    row.tone === 'on' ? 'bg-accent-soft text-on-accent-soft' : row.tone === 'later' ? 'bg-surface text-faint' : 'bg-warn-soft text-warn-ink'
+                  }`}
+                >
+                  {row.tag}
+                </span>
               </div>
-              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                ACTIVE IN .ENV
-              </span>
-            </div>
-            <p className="text-xs text-[var(--text-secondary)]">
-              Powers real-time Speech-to-Text (Saaras v3) in Hindi, Indian English, and Punjabi.
-            </p>
-            <div className="mt-2 text-[11px] font-mono text-emerald-400/90 bg-black/40 px-2.5 py-1 rounded-lg">
-              Key: sk_ccuk587o...•••••••• [Configured]
-            </div>
-          </div>
+              <p className="text-[13px] text-muted">{row.body}</p>
+            </li>
+          ))}
+        </ul>
 
-          {/* 2. Twilio */}
-          <div className="glass p-4 rounded-xl border-purple-500/20 bg-purple-950/10">
-            <div className="flex items-center justify-between mb-1.5">
-              <div className="flex items-center gap-2">
-                <Clock className="w-4 h-4 text-[var(--purple-candle)]" />
-                <span className="text-sm font-semibold text-white">TWILIO TELEPHONY (Phase 2)</span>
-              </div>
-              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30">
-                POST-HACKATHON
-              </span>
-            </div>
-            <p className="text-xs text-[var(--text-secondary)]">
-              Reserved for direct PSTN carrier SIP trunking. Not required for MVP — live microphone testing handles real calls on speaker phone!
-            </p>
-          </div>
-
-          {/* 3. Gemini Contextual Director */}
-          <div className="glass p-4 rounded-xl border-white/10">
-            <div className="flex items-center justify-between mb-1.5">
-              <div className="flex items-center gap-2">
-                <ShieldCheck className="w-4 h-4 text-[var(--green-accent)]" />
-                <span className="text-sm font-semibold text-white">CONTEXTUAL AI DIRECTOR</span>
-              </div>
-              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-white/10 text-white/70">
-                BUILT-IN ACTIVE
-              </span>
-            </div>
-            <p className="text-xs text-[var(--text-secondary)]">
-              Runs built-in multilingual semantic intent evaluation and negation suppression offline or via optional Gemini API key.
-            </p>
-          </div>
-
-          {/* 4. Telegram Bot Alerts (Optional) */}
-          <div className="glass p-4 rounded-xl border-purple-500/20 bg-purple-950/10">
-            <div className="flex items-center justify-between mb-1.5">
-              <div className="flex items-center gap-2">
-                <CheckCircle2 className="w-4 h-4 text-[var(--purple-bright)]" />
-                <span className="text-sm font-semibold text-white">TELEGRAM BOT ALERTS</span>
-              </div>
-              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30">
-                OPTIONAL
-              </span>
-            </div>
-            <p className="text-xs text-[var(--text-secondary)]">
-              Sends instant protective emergency alerts to your Telegram chat when HIGH/CRITICAL scams are detected. Full PII & credential scrubbing is guaranteed.
-            </p>
-          </div>
-        </div>
-
-        {/* Test Connection Output */}
-        {testResult && (
-          <div className="glass p-3 rounded-xl mb-4 text-xs font-mono text-[var(--purple-bright)] bg-black/50 border-[var(--purple-border)]">
-            {testResult}
-          </div>
-        )}
-
-        {/* Footer Actions */}
-        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-3 border-t border-white/10">
-          <button
-            onClick={handleTestBackend}
-            disabled={testingKey}
-            className="w-full sm:w-auto px-4 py-2 rounded-xl glass hover:bg-white/10 text-xs font-semibold text-white transition-colors"
-          >
-            {testingKey ? 'Testing Connection...' : '⚡ Test Sarvam Connection'}
+        <div className="flex flex-col sm:flex-row gap-2.5 sm:justify-between">
+          <button type="button" onClick={runCheck} disabled={check.state === 'checking'} className="sb-btn sb-btn-soft">
+            {check.state === 'checking' ? 'Checking…' : 'Check again'}
           </button>
-
-          <button
-            onClick={handleCopyEnv}
-            className="w-full sm:w-auto btn-primary py-2 px-5 text-xs flex items-center justify-center gap-2 rounded-xl"
-          >
-            {copied ? <Check className="w-4 h-4 text-emerald-300" /> : <Copy className="w-4 h-4" />}
-            {copied ? 'Copied .env Template!' : 'Copy .env Keys'}
+          <button type="button" onClick={handleCopyEnv} className="sb-btn sb-btn-primary">
+            {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+            {copied ? 'Copied the .env template' : 'Copy a .env template'}
           </button>
         </div>
       </div>

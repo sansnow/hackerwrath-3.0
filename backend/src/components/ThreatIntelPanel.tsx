@@ -1,19 +1,8 @@
-import { useState, useEffect } from 'react';
-import {
-  Database,
-  RefreshCw,
-  Plus,
-  ShieldAlert,
-  Search,
-  Cpu,
-  Sparkles,
-  BookOpen,
-  CheckCircle,
-  AlertTriangle,
-  Flame,
-  Layers,
-} from 'lucide-react';
-import type { RAGHealthResponse, RAGClassificationResponse } from '../hooks/useLiveDetection';
+import { useState, useEffect, type FormEvent } from 'react';
+import { RefreshCw } from 'lucide-react';
+import { CHIP_FOR_CATEGORY } from '../spell/signals';
+import { fetchRag, fetchRagHealth } from '../spell/rag';
+import type { RAGClassificationResponse, RAGHealthResponse, RetrievedExample } from '../hooks/useLiveDetection';
 
 interface SyncedKeyword {
   keyword: string;
@@ -23,72 +12,48 @@ interface SyncedKeyword {
   active: boolean;
 }
 
+const CATEGORIES: Array<[string, string]> = [
+  ['OTP_OR_PIN_REQUEST', 'OTP or PIN ask'],
+  ['QR_SCAN_TO_RECEIVE_MONEY', 'QR scan to “receive” money'],
+  ['REMOTE_ACCESS_OR_SCREEN_SHARE', 'Remote access or screen share'],
+  ['THREAT_ARREST_OR_LEGAL_ACTION', 'Arrest or legal threat'],
+  ['ACCOUNT_SUSPENSION_THREAT', 'Account block or KYC threat'],
+  ['AUTHORITY_OR_BANK_IMPERSONATION', 'Bank or authority impersonation'],
+  ['URGENT_PAYMENT_DEMAND', 'Urgent payment demand'],
+];
+
+const RAG_SAMPLES = [
+  'Scan QR code to receive Rs 25000',
+  'Your electricity bill is pending, download AnyDesk',
+  'Bank KYC verification OTP code',
+  'Hello, I am interested in buying the sofa on OLX',
+];
+
+const VIEWS = [
+  ['library', 'Real-call library'],
+  ['phrases', 'Added phrases'],
+] as const;
+
 export default function ThreatIntelPanel() {
-  // RAG State
+  const [view, setView] = useState<'library' | 'phrases'>('library');
+
+  // The RAG library of real calls
   const [ragHealth, setRagHealth] = useState<RAGHealthResponse | null>(null);
-  const [isRagLoading, setIsRagLoading] = useState(false);
   const [ragQuery, setRagQuery] = useState('');
   const [ragResult, setRagResult] = useState<RAGClassificationResponse | null>(null);
-  const [isSearchingRag, setIsSearchingRag] = useState(false);
+  const [isSearching, setIsSearching] = useState(false);
+  const [searchFailed, setSearchFailed] = useState(false);
 
-  // Keyword Sync State
+  // Phrases synced across live calls
   const [keywords, setKeywords] = useState<SyncedKeyword[]>([]);
-  const [isKeywordsLoading, setIsKeywordsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
   const [newKeyword, setNewKeyword] = useState('');
   const [newCategory, setNewCategory] = useState('OTP_OR_PIN_REQUEST');
-  const [newWeight, setNewWeight] = useState(0.45);
-  const [syncMsg, setSyncMsg] = useState<string | null>(null);
+  const [newWeight] = useState(0.45);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
-  // Tab: 'rag' or 'sync'
-  const [activeSubTab, setActiveSubTab] = useState<'rag' | 'sync'>('rag');
-
-  // Fetch RAG Health
-  const fetchRagHealth = async () => {
-    setIsRagLoading(true);
-    try {
-      const res = await fetch('/rag/health');
-      if (res.ok) {
-        const data: RAGHealthResponse = await res.json();
-        setRagHealth(data);
-      }
-    } catch (e) {
-      console.warn('Failed to fetch RAG health', e);
-    } finally {
-      setIsRagLoading(false);
-    }
-  };
-
-  // Perform Semantic Vector Search via RAG
-  const handleRagSearch = async (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    if (!ragQuery.trim() || isSearchingRag) return;
-
-    setIsSearchingRag(true);
-    try {
-      const res = await fetch('/rag/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          text: ragQuery.trim(),
-          top_k: 4,
-          include_retrieved_examples: true,
-        }),
-      });
-
-      if (res.ok) {
-        const data: RAGClassificationResponse = await res.json();
-        setRagResult(data);
-      }
-    } catch (e) {
-      console.error('RAG vector query error', e);
-    } finally {
-      setIsSearchingRag(false);
-    }
-  };
-
-  // Fetch Synced Keywords
   const fetchKeywords = async () => {
-    setIsKeywordsLoading(true);
+    setIsLoading(true);
     try {
       const res = await fetch('/sync/keywords');
       if (res.ok) {
@@ -98,16 +63,26 @@ export default function ThreatIntelPanel() {
     } catch {
       // Fallback
     } finally {
-      setIsKeywordsLoading(false);
+      setIsLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchRagHealth();
     fetchKeywords();
+    fetchRagHealth().then(setRagHealth);
   }, []);
 
-  const handleAddKeyword = async (e: React.FormEvent) => {
+  const handleRagSearch = async (query: string) => {
+    if (!query.trim() || isSearching) return;
+    setIsSearching(true);
+    setSearchFailed(false);
+    const result = await fetchRag(query.trim(), 4);
+    setRagResult(result);
+    setSearchFailed(!result);
+    setIsSearching(false);
+  };
+
+  const handleAddKeyword = async (e: FormEvent) => {
     e.preventDefault();
     if (!newKeyword.trim()) return;
 
@@ -119,323 +94,234 @@ export default function ThreatIntelPanel() {
           keyword: newKeyword.trim().toLowerCase(),
           category: newCategory,
           weight: newWeight,
-          source_call_id: 'threat_intel_ui',
+          source_call_id: 'admin_dashboard',
         }),
       });
 
       if (res.ok) {
-        setSyncMsg(`Synced signature "${newKeyword}" across all active calls.`);
+        setMsg({ ok: true, text: `“${newKeyword}” now applies to every live call.` });
         setNewKeyword('');
         fetchKeywords();
-        setTimeout(() => setSyncMsg(null), 3000);
+        setTimeout(() => setMsg(null), 3000);
       }
     } catch (e: any) {
-      setSyncMsg(`Error: ${e.message}`);
+      setMsg({ ok: false, text: `Couldn’t add it: ${e.message}` });
     }
   };
 
-  return (
-    <div className="glass-card p-6 md:p-8 space-y-6 animate-slide-up border border-[#292F3C]">
-      {/* Top Header */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 pb-4 border-b border-[#292F3C]">
-        <div>
-          <div className="flex items-center gap-2.5">
-            <div className="p-2 rounded-xl bg-[#171B26] border border-[#292F3C]">
-              <Database className="w-5 h-5 text-[#8B7CFF]" />
-            </div>
-            <div>
-              <h2 className="text-lg font-bold text-[#F1F3F8]">
-                Intelligence Core & RAG Vector Knowledge Base
-              </h2>
-              <p className="text-xs text-[#A2A9BA] mt-0.5">
-                Semantic retrieval across 2,841 indexed fraud transcripts & active cross-call signature synchronization
-              </p>
-            </div>
-          </div>
-        </div>
+  const docs = ragHealth?.indexed_documents_count;
 
-        {/* View Switcher Pills */}
-        <div className="flex items-center gap-1.5 p-1 bg-[#11141C] border border-[#292F3C] rounded-xl text-xs">
-          <button
-            onClick={() => setActiveSubTab('rag')}
-            className={`px-3 py-1.5 rounded-lg font-medium transition-all ${
-              activeSubTab === 'rag'
-                ? 'bg-[#8B7CFF] text-white shadow-sm'
-                : 'text-[#A2A9BA] hover:text-[#F1F3F8]'
-            }`}
-          >
-            📚 RAG Vector Store
-          </button>
-          <button
-            onClick={() => setActiveSubTab('sync')}
-            className={`px-3 py-1.5 rounded-lg font-medium transition-all ${
-              activeSubTab === 'sync'
-                ? 'bg-[#8B7CFF] text-white shadow-sm'
-                : 'text-[#A2A9BA] hover:text-[#F1F3F8]'
-            }`}
-          >
-            🔄 Synced Signatures ({keywords.length})
-          </button>
+  return (
+    <div className="sb-card p-5 sm:p-6 flex flex-col gap-6 sb-rise">
+      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+        <div>
+          <div className="sb-eyebrow">Threat intel</div>
+          <h2 className="text-[26px] leading-8 font-extrabold text-head mt-1">
+            {view === 'library' ? 'A library of real calls' : 'Phrases every call listens for'}
+          </h2>
+          <p className="text-[13px] text-faint mt-1">
+            {view === 'library'
+              ? `${docs ? docs.toLocaleString() : 'Real'} Indian scam and genuine call transcripts, searched by meaning.`
+              : 'A phrase added here reaches every live call at once.'}
+          </p>
+        </div>
+        <div role="radiogroup" aria-label="Threat intel view" className="flex items-center p-1 rounded-full bg-surface shrink-0">
+          {VIEWS.map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              role="radio"
+              aria-checked={view === id}
+              onClick={() => setView(id)}
+              className={`px-4 min-h-10 rounded-full text-[13px] font-bold transition-colors ${
+                view === id ? 'bg-accent text-on-accent' : 'text-muted hover:text-ink'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
         </div>
       </div>
 
-      {/* ========================================================= */}
-      {/* 1. RAG VECTOR STORE & SEMANTIC RETRIEVAL TAB */}
-      {/* ========================================================= */}
-      {activeSubTab === 'rag' && (
-        <div className="space-y-6">
-          {/* Vector Store Health Metrics Grid */}
-          <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
-            <div className="p-3.5 rounded-2xl bg-[#11141C] border border-[#292F3C]">
-              <span className="text-[10px] font-semibold uppercase tracking-wider text-[#70798C] block mb-1">
-                Vector Index Status
-              </span>
-              <div className="flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-[#63D6A5] animate-pulse" />
-                <span className="text-sm font-bold font-mono text-[#F1F3F8]">
-                  {ragHealth?.status || 'READY'}
-                </span>
-              </div>
-            </div>
-
-            <div className="p-3.5 rounded-2xl bg-[#11141C] border border-[#292F3C]">
-              <span className="text-[10px] font-semibold uppercase tracking-wider text-[#70798C] block mb-1">
-                Indexed Documents
-              </span>
-              <span className="text-sm font-bold font-mono text-[#72D7E8]">
-                {ragHealth?.indexed_documents_count || 2841} Transcripts
-              </span>
-            </div>
-
-            <div className="p-3.5 rounded-2xl bg-[#11141C] border border-[#292F3C]">
-              <span className="text-[10px] font-semibold uppercase tracking-wider text-[#70798C] block mb-1">
-                Embedding Model
-              </span>
-              <span className="text-xs font-bold font-mono text-[#8B7CFF] truncate block">
-                all-MiniLM-L6-v2
-              </span>
-            </div>
-
-            <div className="p-3.5 rounded-2xl bg-[#11141C] border border-[#292F3C]">
-              <span className="text-[10px] font-semibold uppercase tracking-wider text-[#70798C] block mb-1">
-                Retrieval Engine
-              </span>
-              <span className="text-xs font-bold font-mono text-[#63D6A5] truncate block">
-                Cosine Similarity
-              </span>
-            </div>
+      {view === 'library' ? (
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-wrap gap-x-5 gap-y-1 text-[12px] font-semibold text-faint">
+            <span className="flex items-center gap-1.5">
+              <span className={`w-2 h-2 rounded-full ${ragHealth?.vector_index_loaded ? 'bg-accent' : 'bg-warn'}`} />
+              {ragHealth ? (ragHealth.vector_index_loaded ? 'Library loaded' : 'Library not loaded yet') : 'Library status unknown'}
+            </span>
+            {ragHealth?.embedding_model && <span>Model: {ragHealth.embedding_model}</span>}
+            {ragHealth?.vector_store_type && <span>Store: {ragHealth.vector_store_type}</span>}
           </div>
 
-          {/* Interactive Semantic Vector Search Bar */}
-          <div className="p-5 rounded-2xl bg-[#11141C] border border-[#292F3C] space-y-3.5">
-            <div>
-              <h3 className="text-xs font-bold uppercase tracking-wider text-[#F1F3F8] flex items-center gap-1.5">
-                <Search className="w-3.5 h-3.5 text-[#72D7E8]" />
-                <span>Semantic Vector Corpus Query</span>
-              </h3>
-              <p className="text-xs text-[#A2A9BA] mt-0.5">
-                Type any phone conversation excerpt to test semantic retrieval and observe the nearest scam/legitimate reference vectors.
-              </p>
-            </div>
-
-            <form onSubmit={handleRagSearch} className="flex gap-2">
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              handleRagSearch(ragQuery);
+            }}
+            className="sb-soft p-4 flex flex-col gap-3"
+          >
+            <label htmlFor="sb-rag-query" className="text-[15px] font-extrabold text-head">
+              What does this sound like?
+            </label>
+            <div className="flex flex-col sm:flex-row gap-2.5">
               <input
+                id="sb-rag-query"
                 type="text"
                 value={ragQuery}
                 onChange={(e) => setRagQuery(e.target.value)}
-                placeholder="e.g., 'I am calling from Mumbai police cyber crime branch regarding a parcel...'"
-                className="glass-input flex-1 px-4 py-2.5 text-xs text-[#F1F3F8]"
+                placeholder="e.g. I am calling from Mumbai police cyber crime branch about a parcel…"
+                className="sb-input flex-1 px-3.5 py-2.5 text-[14px]"
               />
-              <button
-                type="submit"
-                disabled={!ragQuery.trim() || isSearchingRag}
-                className="btn-primary px-5 py-2.5 text-xs font-medium flex items-center gap-1.5 shrink-0 disabled:opacity-40"
-              >
-                {isSearchingRag ? (
-                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                ) : (
-                  <Sparkles className="w-3.5 h-3.5" />
-                )}
-                <span>Retrieve Nearest Vectors</span>
+              <button type="submit" disabled={!ragQuery.trim() || isSearching} className="sb-btn sb-btn-primary">
+                {isSearching ? 'Searching…' : 'Find similar calls'}
               </button>
-            </form>
-
-            {/* Quick Test Chips */}
-            <div className="flex flex-wrap items-center gap-1.5 pt-1">
-              <span className="text-[11px] text-[#70798C]">Quick Queries:</span>
-              {[
-                'Scan QR code to receive Rs 25000',
-                'Your electricity bill is pending, download AnyDesk',
-                'Bank KYC verification OTP code',
-                'Hello, I am interested in buying the sofa on OLX',
-              ].map((q, i) => (
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {RAG_SAMPLES.map((q) => (
                 <button
-                  key={i}
+                  key={q}
                   type="button"
                   onClick={() => {
                     setRagQuery(q);
+                    handleRagSearch(q);
                   }}
-                  className="px-2.5 py-1 rounded-lg text-[11px] bg-[#171B26] hover:bg-[#202636] text-[#A2A9BA] border border-[#292F3C] transition"
+                  className="sb-chip bg-card text-muted hover:text-ink text-[12px]"
                 >
-                  "{q}"
+                  {q}
                 </button>
               ))}
             </div>
-          </div>
+          </form>
 
-          {/* RAG Query Results Display */}
+          {searchFailed && (
+            <p className="text-[13px] font-semibold text-danger-text" aria-live="polite">
+              The library didn’t answer. Is the backend running with the RAG index built?
+            </p>
+          )}
+
           {ragResult && (
-            <div className="p-5 rounded-2xl bg-[#11141C] border border-[#292F3C] space-y-4 animate-fade-in">
-              <div className="flex items-center justify-between pb-3 border-b border-[#292F3C]">
-                <div className="flex items-center gap-2">
-                  <span
-                    className={`text-xs font-bold font-mono px-2.5 py-0.5 rounded-full border ${
-                      ragResult.classification === 'SCAM'
-                        ? 'bg-[#F08091]/15 text-[#F08091] border-[#F08091]/30'
-                        : 'bg-[#63D6A5]/15 text-[#63D6A5] border-[#63D6A5]/30'
-                    }`}
-                  >
-                    {ragResult.classification}
-                  </span>
-                  <span className="text-xs text-[#F1F3F8] font-semibold">
-                    Risk Score: {Math.round(ragResult.risk_score)}/100
-                  </span>
-                  <span className="text-xs text-[#70798C] font-mono">
-                    Confidence: {Math.round(ragResult.confidence * 100)}%
-                  </span>
-                </div>
-                <span className="text-[10px] text-[#70798C] font-mono">
-                  Latency: {ragResult.retrieval_latency_ms.toFixed(1)}ms retrieval · {ragResult.classification_latency_ms.toFixed(1)}ms total
+            <div className="flex flex-col gap-3 sb-rise">
+              <div className="flex flex-wrap items-center gap-2">
+                <span
+                  className={`sb-chip text-[12px] ${
+                    ragResult.classification === 'SCAM'
+                      ? 'bg-danger-soft text-danger-ink'
+                      : ragResult.classification === 'LEGITIMATE'
+                        ? 'bg-accent-soft text-on-accent-soft'
+                        : 'bg-warn-soft text-warn-ink'
+                  }`}
+                >
+                  {ragResult.classification === 'SCAM'
+                    ? 'Sounds like a scam'
+                    : ragResult.classification === 'LEGITIMATE'
+                      ? 'Sounds genuine'
+                      : 'Not sure'}
+                </span>
+                <span className="text-[12px] text-faint">
+                  score {Math.round(ragResult.risk_score)}/100 · {Math.round(ragResult.confidence * 100)}% sure ·{' '}
+                  {ragResult.retrieval_latency_ms.toFixed(0)} ms
                 </span>
               </div>
-
-              <p className="text-xs text-[#A2A9BA] leading-relaxed">
-                <span className="font-semibold text-[#F1F3F8]">Justification: </span>
-                {ragResult.explanation}
-              </p>
-
-              {/* Retrieved Corpus Neighbors */}
-              <div className="space-y-2 pt-2">
-                <h4 className="text-[11px] font-semibold uppercase tracking-wider text-[#72D7E8]">
-                  Retrieved Nearest Reference Dialogues ({ragResult.retrieved_examples.length})
-                </h4>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {ragResult.retrieved_examples.map((ex, i) => (
-                    <div
-                      key={i}
-                      className="p-3.5 rounded-xl bg-[#171B26] border border-[#292F3C] space-y-2 text-xs"
-                    >
-                      <div className="flex items-center justify-between">
-                        <span
-                          className={`text-[9px] font-bold font-mono px-2 py-0.5 rounded-full border ${
-                            ex.label === 'SCAM'
-                              ? 'bg-[#F08091]/15 text-[#F08091] border-[#F08091]/30'
-                              : 'bg-[#63D6A5]/15 text-[#63D6A5] border-[#63D6A5]/30'
-                          }`}
-                        >
-                          {ex.label}
-                        </span>
-                        <span className="text-[11px] font-mono text-[#72D7E8]">
-                          Cosine Sim: {(ex.similarity * 100).toFixed(1)}%
-                        </span>
-                      </div>
-                      <p className="text-[#A2A9BA] text-[11px] leading-relaxed line-clamp-3 italic">
-                        "{ex.text}"
-                      </p>
-                    </div>
-                  ))}
-                </div>
-              </div>
+              {ragResult.explanation && <p className="text-[14px] text-muted">{ragResult.explanation}</p>}
+              <ul className="grid grid-cols-1 md:grid-cols-2 gap-2.5 list-none">
+                {ragResult.retrieved_examples.map((ex) => (
+                  <ExampleCard key={ex.example_id} example={ex} />
+                ))}
+              </ul>
             </div>
           )}
         </div>
-      )}
-
-      {/* ========================================================= */}
-      {/* 2. SYNCED SIGNATURES TAB */}
-      {/* ========================================================= */}
-      {activeSubTab === 'sync' && (
-        <div className="space-y-6">
-          {/* Add Signature Form */}
-          <form onSubmit={handleAddKeyword} className="p-4 rounded-2xl bg-[#11141C] border border-[#292F3C] space-y-3">
-            <h3 className="text-xs font-semibold text-[#A2A9BA] uppercase tracking-wider flex items-center gap-1.5">
-              <Plus className="w-3.5 h-3.5 text-[#63D6A5]" />
-              <span>Register New Scam Signature</span>
-            </h3>
-
-            <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
-              <input
-                type="text"
-                value={newKeyword}
-                onChange={(e) => setNewKeyword(e.target.value)}
-                placeholder="Keyword or phrase (e.g. 'digital arrest warrant')"
-                className="glass-input sm:col-span-6 px-3.5 py-2 text-xs text-[#F1F3F8]"
-              />
-
-              <select
-                value={newCategory}
-                onChange={(e) => setNewCategory(e.target.value)}
-                className="glass-input sm:col-span-4 px-3 py-2 text-xs text-[#F1F3F8] bg-[#11141C]"
-              >
-                <option value="OTP_OR_PIN_REQUEST">OTP / PIN Phishing</option>
-                <option value="QR_SCAN_TO_RECEIVE_MONEY">Reverse QR Scam</option>
-                <option value="REMOTE_ACCESS_OR_SCREEN_SHARE">Remote Access APK</option>
-                <option value="THREAT_ARREST_OR_LEGAL_ACTION">Digital Arrest Extortion</option>
-                <option value="ACCOUNT_SUSPENSION_THREAT">Account Suspension</option>
-                <option value="URGENT_PAYMENT_DEMAND">Urgent Advance Fee</option>
-              </select>
-
-              <button
-                type="submit"
-                className="btn-primary sm:col-span-2 py-2 text-xs font-semibold"
-              >
-                Sync Signature
+      ) : (
+        <>
+          <form onSubmit={handleAddKeyword} className="sb-soft p-4 flex flex-col gap-3">
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-[15px] font-extrabold text-head">Add a phrase</span>
+              <button type="button" onClick={fetchKeywords} disabled={isLoading} className="sb-btn sb-btn-ghost min-h-9 px-3 text-[13px]">
+                <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
+                Refresh
               </button>
             </div>
-
-            {syncMsg && (
-              <p className="text-xs text-[#63D6A5] font-medium animate-fade-in">{syncMsg}</p>
+            <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5">
+              <label className="sm:col-span-6">
+                <span className="sr-only">Phrase</span>
+                <input
+                  type="text"
+                  value={newKeyword}
+                  onChange={(e) => setNewKeyword(e.target.value)}
+                  placeholder="e.g. army gate pass fee, digital arrest warrant"
+                  className="sb-input w-full px-3.5 py-2.5 text-[14px]"
+                />
+              </label>
+              <label className="sm:col-span-4">
+                <span className="sr-only">What kind of ask</span>
+                <select
+                  value={newCategory}
+                  onChange={(e) => setNewCategory(e.target.value)}
+                  className="sb-input w-full px-3.5 py-2.5 text-[14px] font-semibold"
+                >
+                  {CATEGORIES.map(([value, label]) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button type="submit" className="sm:col-span-2 sb-btn sb-btn-primary">
+                Add
+              </button>
+            </div>
+            {msg && (
+              <p className={`text-[13px] font-semibold ${msg.ok ? 'text-accent' : 'text-danger-text'}`} aria-live="polite">
+                {msg.text}
+              </p>
             )}
           </form>
 
-          {/* Active Synced Signatures Table */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between text-xs text-[#A2A9BA] px-1">
-              <span>Active Signatures Synchronized Across Live Streams</span>
-              <button
-                onClick={fetchKeywords}
-                disabled={isKeywordsLoading}
-                className="text-[11px] text-[#8B7CFF] hover:underline flex items-center gap-1"
-              >
-                <RefreshCw className={`w-3 h-3 ${isKeywordsLoading ? 'animate-spin' : ''}`} />
-                <span>Refresh</span>
-              </button>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 max-h-[360px] overflow-y-auto pr-1">
-              {keywords.map((kw, i) => (
-                <div
-                  key={i}
-                  className="p-3 rounded-xl bg-[#11141C] border border-[#292F3C] flex items-center justify-between gap-3 text-xs"
-                >
-                  <div className="space-y-0.5">
-                    <span className="font-semibold text-[#F1F3F8] block">"{kw.keyword}"</span>
-                    <span className="text-[10px] text-[#70798C] font-mono">{kw.category}</span>
-                  </div>
-                  <div className="text-right shrink-0">
-                    <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-[#8B7CFF]/15 text-[#8B7CFF] border border-[#8B7CFF]/30">
-                      Weight: {Math.round(kw.weight * 100)}%
+          <div>
+            <div className="sb-eyebrow mb-3">Added phrases · {keywords.length}</div>
+            {keywords.length === 0 ? (
+              <p className="sb-soft px-4 py-8 text-center text-[13px] text-faint">
+                None added yet. The built-in rules already cover the main kinds of scam ask.
+              </p>
+            ) : (
+              <ul className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5 list-none">
+                {keywords.map((kw, i) => (
+                  <li key={i} className="rounded-[18px] border border-line px-4 py-3 flex flex-col gap-1.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[15px] font-extrabold text-head line-clamp-1">{kw.keyword}</span>
+                      <span className="text-[12px] text-faint shrink-0">
+                        {kw.hit_count} {kw.hit_count === 1 ? 'hit' : 'hits'}
+                      </span>
+                    </div>
+                    <span className="sb-chip self-start text-[12px] px-2.5 py-1 bg-danger-soft text-danger-ink">
+                      {CHIP_FOR_CATEGORY[String(kw.category).toUpperCase()] || kw.category}
                     </span>
-                    <span className="text-[10px] text-[#70798C] block mt-0.5 font-mono">
-                      Hits: {kw.hit_count}
-                    </span>
-                  </div>
-                </div>
-              ))}
-            </div>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
-        </div>
+        </>
       )}
     </div>
+  );
+}
+
+function ExampleCard({ example }: { example: RetrievedExample }) {
+  return (
+    <li className="rounded-[18px] border border-line px-4 py-3">
+      <div className="flex items-center justify-between gap-2 mb-1">
+        <span
+          className={`sb-chip text-[11px] px-2.5 py-0.5 ${
+            example.label === 'SCAM' ? 'bg-danger-soft text-danger-ink' : 'bg-accent-soft text-on-accent-soft'
+          }`}
+        >
+          {example.label === 'SCAM' ? 'Scam call' : 'Genuine call'}
+        </span>
+        <span className="text-[12px] text-faint">{Math.round(example.similarity * 100)}% alike</span>
+      </div>
+      <p className="text-[13px] text-ink italic line-clamp-4">“{example.text}”</p>
+    </li>
   );
 }

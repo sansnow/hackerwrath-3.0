@@ -227,9 +227,14 @@ class RiskScorer:
 
         # Never classify a call based ONLY on a weak keyword match if Contextual Director
         # sees no solicitation/threat intent
+        # (Asks for, or mentions of, banking secrets are exempt: they are never part of a genuine call,
+        # and the contextual engine doesn't know every way of asking for them.)
+        rule_categories = {ind.category for ind in rule_result.triggered_indicators}
+        involves_banking_secret = bool(rule_categories & {"OTP_OR_PIN_REQUEST", "SENSITIVE_DETAIL_MENTION"})
         if (
             rule_result.rule_score > 0.0
             and len(rule_result.triggered_indicators) == 1
+            and not involves_banking_secret
             and contextual_result.intent_classification in ("PROTECTIVE_WARNING", "LEGITIMATE_INQUIRY")
             and contextual_result.intent_risk_score < 20.0
         ):
@@ -237,6 +242,18 @@ class RiskScorer:
             reasons.append(
                 "Single rule indicator was tempered because contextual intent analysis found no solicitation or threat."
             )
+
+        # Safety advice the rules engine recognised ("don't give your card number to anyone"), with no
+        # other indicator: the contextual engine can misread the quoted ask, so keep it Low.
+        if rule_result.suppressed_protective_matches and not rule_result.triggered_indicators:
+            combined = min(combined, 15.0)
+
+        # Floors: asking for an OTP, CVV, PIN, card or account detail is always High risk;
+        # bringing one up is at least Possible risk.
+        if "OTP_OR_PIN_REQUEST" in rule_categories:
+            combined = max(combined, self.settings.credential_request_floor)
+        elif "SENSITIVE_DETAIL_MENTION" in rule_categories:
+            combined = max(combined, self.settings.sensitive_mention_floor)
 
         # Deepfake analysis is kept structurally separate per Requirement 6
         risk_score = round(min(100.0, max(0.0, combined)), 2)
